@@ -1,0 +1,19 @@
+---
+applications:
+  - name: cs-agent
+    memory: 1G
+    disk_quota: 2G
+    instances: 1
+    docker:
+      image: vishnuvryeruva98/cs-agent:latest
+    health-check-type: http
+    health-check-http-endpoint: /api/v1/health
+    timeout: 180
+    env:
+      NODE_ENV: production
+      AICORE_MODEL: gpt-4o-mini
+      AGENT_MAILBOX: cs-agent@medtech-ai.jnj.com
+      CONFIDENCE_THRESHOLD: "0.75"
+      POSTGRES_DB: csagent
+      POSTGRES_USER: csagent
+      POSTGRES_PASSWORD: database123456

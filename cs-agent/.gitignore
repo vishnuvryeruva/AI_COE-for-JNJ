@@ -1,0 +1,9 @@
+*.log
+*.tsbuildinfo
+.DS_Store
+.env
+dist
+node_modules
+tsconfig.tsbuildinfo
+vite.config.d.ts
+vite.config.js
