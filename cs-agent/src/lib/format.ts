@@ -20,6 +20,7 @@ export const EXTRACTION_LABEL: Record<string, string> = {
   RFC822_ATTACHMENT: 'Forwarded as attachment',
   BODY_PARSE: 'Parsed from message body',
   MANUAL: 'Entered manually',
+  GRAPH_DIRECT: 'Selected from Outlook inbox',
 };
 
 export function confidenceTone(value: number | null): string {

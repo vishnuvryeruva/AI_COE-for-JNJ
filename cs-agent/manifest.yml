@@ -5,7 +5,7 @@ applications:
     disk_quota: 2G
     instances: 1
     docker:
-      image: vishnuvryeruva98/cs-agent:latest
+      image: vishnuvryeruva98/cs-agent:v202607161200
     health-check-type: http
     health-check-http-endpoint: /api/v1/health
     timeout: 180

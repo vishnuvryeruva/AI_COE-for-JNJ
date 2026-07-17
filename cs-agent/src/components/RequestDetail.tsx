@@ -8,12 +8,13 @@ import {
 
 interface Props {
   id: string;
+  outlookConnected: boolean;
   onBack: () => void;
   onChanged: () => void;
   onError: (message: string) => void;
 }
 
-export default function RequestDetail({ id, onBack, onChanged, onError }: Props) {
+export default function RequestDetail({ id, outlookConnected, onBack, onChanged, onError }: Props) {
   const [request, setRequest] = useState<CsRequest | null>(null);
   const [busy, setBusy] = useState(false);
   const [to, setTo] = useState('');
@@ -240,7 +241,7 @@ export default function RequestDetail({ id, onBack, onChanged, onError }: Props)
                     }, true)
                   }
                 >
-                  Approve &amp; send
+                  {outlookConnected ? 'Approve & send via Outlook' : 'Approve'}
                 </button>
                 <button
                   className="btn"
@@ -262,11 +263,19 @@ export default function RequestDetail({ id, onBack, onChanged, onError }: Props)
               </div>
             )}
 
-            <div className="callout warn" style={{ marginTop: 14 }}>
-              <strong>Sending is stubbed in POC 1</strong>
-              Approve records the decision and the audit entry. Actual delivery is Microsoft Graph
-              <span className="mono"> sendMail</span>, pending the AAD app registration.
-            </div>
+            {outlookConnected ? (
+              <div className="callout info" style={{ marginTop: 14 }}>
+                <strong>Sends via Outlook</strong>
+                Approve &amp; send delivers this reply through Microsoft Graph, from your own mailbox —
+                To the sender, Cc the group. A copy lands in your Sent Items.
+              </div>
+            ) : (
+              <div className="callout warn" style={{ marginTop: 14 }}>
+                <strong>Sending is stubbed — not signed in to Outlook</strong>
+                Approve records the decision and the audit entry but doesn't send. Connect Outlook on
+                the main screen to send for real.
+              </div>
+            )}
           </div>
         </div>
       </div>

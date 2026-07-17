@@ -60,6 +60,22 @@ CREATE TABLE IF NOT EXISTS audit_events (
 );
 
 CREATE INDEX IF NOT EXISTS audit_request_idx ON audit_events (request_id, ts);
+
+-- Microsoft Graph delegated auth. One serialized MSAL token cache blob (all
+-- accounts) so refresh tokens survive a container restart mid-demo.
+CREATE TABLE IF NOT EXISTS msal_cache (
+  id    TEXT PRIMARY KEY,
+  blob  TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Browser session -> which signed-in Microsoft account it maps to.
+CREATE TABLE IF NOT EXISTS web_sessions (
+  sid              TEXT PRIMARY KEY,
+  home_account_id  TEXT NOT NULL,
+  username         TEXT,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 `;
 
 async function init() {
@@ -224,7 +240,42 @@ async function findBySourceMessageId(sourceMessageId) {
   return rowToRequest(rows[0]);
 }
 
+// --- Microsoft Graph auth persistence ---
+
+async function loadMsalCache() {
+  const { rows } = await pool.query("SELECT blob FROM msal_cache WHERE id = 'msal'");
+  return rows[0] ? rows[0].blob : null;
+}
+
+async function saveMsalCache(blob) {
+  await pool.query(
+    `INSERT INTO msal_cache (id, blob, updated_at) VALUES ('msal', $1, NOW())
+     ON CONFLICT (id) DO UPDATE SET blob = EXCLUDED.blob, updated_at = NOW()`,
+    [blob]
+  );
+}
+
+async function createSession(sid, homeAccountId, username) {
+  await pool.query(
+    `INSERT INTO web_sessions (sid, home_account_id, username) VALUES ($1, $2, $3)
+     ON CONFLICT (sid) DO UPDATE SET home_account_id = EXCLUDED.home_account_id, username = EXCLUDED.username`,
+    [sid, homeAccountId, username]
+  );
+}
+
+async function getSession(sid) {
+  if (!sid) return null;
+  const { rows } = await pool.query('SELECT sid, home_account_id, username FROM web_sessions WHERE sid = $1', [sid]);
+  return rows[0] || null;
+}
+
+async function deleteSession(sid) {
+  if (!sid) return;
+  await pool.query('DELETE FROM web_sessions WHERE sid = $1', [sid]);
+}
+
 module.exports = {
   pool, init, insertRequest, listRequests, getRequest, updateDraft,
   setStatus, stats, addAudit, getAudit, findBySourceMessageId,
+  loadMsalCache, saveMsalCache, createSession, getSession, deleteSession,
 };

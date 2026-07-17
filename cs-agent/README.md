@@ -8,12 +8,23 @@ The point of POC 1 is to retire the risk he named: *"everybody challenged with t
 
 ## What works today
 
-- **Ingest** a forwarded `.eml` (drag-drop), or type an email in manually
+- **Ingest** three ways: pick an email from a connected **Outlook inbox**, drag-drop a forwarded `.eml`, or type one in
 - **Recover the original sender** from the forward — the load-bearing part
 - **Detect intent** + extract the order number via SAP AI Core
 - **Draft a reply** addressed per the rule below
-- **Review and approve** with a full audit trail
-- Runs as **one Docker image** on BTP Cloud Foundry
+- **Review and approve** — and, when signed in to Outlook, **actually send** the reply via Microsoft Graph
+- **Full audit trail**; runs as **one Docker image** on BTP Cloud Foundry
+
+## Ingestion is pluggable
+
+Every path produces one normalized email object; the rest of the app doesn't know the difference. Adding Outlook was one adapter, not a rewrite — which is the reusable-across-use-cases property Pramod asked for.
+
+| Adapter | How the email arrives | Sender confidence |
+|---|---|---|
+| `GRAPH_PICK` | CSR picks it from their own Outlook inbox | 1.0 — structured Graph headers |
+| `RFC822_ATTACHMENT` | Forward as Attachment (Ctrl+Alt+F) | 1.0 |
+| `BODY_PARSE` | Plain forward | 0–0.9 |
+| `MANUAL` | Typed into the form | 1.0 if a valid address |
 
 ## The reply addressing rule
 
@@ -96,6 +107,48 @@ BTP **does not build from a Dockerfile on push** — build locally for `linux/am
 
 The SDK reads the binding out of `VCAP_SERVICES`, so no key goes in the manifest.
 
+## Enabling Outlook (Microsoft Graph)
+
+The Outlook sign-in, inbox picker and real sending appear **only** when the four
+`AZURE_*` vars are set (see `.env.example`). Without them, the app runs exactly
+as before — nothing Outlook-related is shown. Same code, two tenants:
+
+### Option A — a dev tenant you own (try it this week, no waiting)
+
+1. Get a free **Microsoft 365 Developer** tenant (`developer.microsoft.com/microsoft-365/dev-program`) — comes with demo mailboxes and users. You're the admin, so you self-consent in minutes.
+2. **Entra admin → App registrations → New registration**
+   - Redirect URI (Web): `http://localhost:8080/api/v1/auth/callback` (local) or the CF URL for the deployed app
+   - **API permissions → Microsoft Graph → Delegated:** `User.Read`, `Mail.Read`, `Mail.Send`, `offline_access` → **Grant admin consent**
+   - **Certificates & secrets → New client secret**
+3. Put the values in `.env`:
+   ```
+   AZURE_CLIENT_ID=...
+   AZURE_CLIENT_SECRET=...
+   AZURE_TENANT_ID=...          # the dev tenant's Directory (tenant) ID
+   AZURE_REDIRECT_URI=http://localhost:8080/api/v1/auth/callback
+   COOKIE_SECRET=<long random string>
+   ```
+4. `docker compose up --build` → open the app → **Sign in with Microsoft** → your inbox appears → **Process** an email → review → **Approve & send via Outlook**.
+
+Demo with the tenant's synthetic mailboxes. Everything works end to end, including a real send that lands in Sent Items.
+
+### Option B — J&J tenant (the real target)
+
+Same four permissions, granted by J&J IT in the J&J Entra tenant. See
+[`JNJ-IT-App-Registration-Request.md`](../JNJ-IT-App-Registration-Request.md) —
+send that request, and when IT returns the client ID / tenant ID / secret, set
+them via `cf set-env` (redirect URI = the CF app URL) and restart. **No code
+changes** between Option A and Option B.
+
+```bash
+cf set-env cs-agent AZURE_CLIENT_ID     "<from IT>"
+cf set-env cs-agent AZURE_CLIENT_SECRET "<from IT>"
+cf set-env cs-agent AZURE_TENANT_ID     "<from IT>"
+cf set-env cs-agent AZURE_REDIRECT_URI  "https://cs-agent.cfapps.us10.hana.ondemand.com/api/v1/auth/callback"
+cf set-env cs-agent COOKIE_SECRET       "<long random string>"
+cf restart cs-agent
+```
+
 ### Local dev against real AI Core
 
 `.env` needs `AICORE_SERVICE_KEY`. To mint one from the sandbox instance:
@@ -161,11 +214,11 @@ Harmless in POC 1 (the field is displayed, nothing depends on it). Do not carry 
 
 | Gap | Why |
 |---|---|
-| **Sending** | Approve records the decision; delivery is Graph `sendMail`, pending AAD app registration |
-| **Graph polling** | Same blocker. See `../Phase1-Email-Forward-Approach.md` §5 |
+| **Sending without Outlook** | If **not** signed in to Outlook, Approve records the decision but doesn't send. Signed in, it sends for real via Graph `sendMail`. |
+| **Graph auto-polling** | The inbox is pulled on demand (pick from list). Background auto-ingest is Phase 2/3. |
 | **ERP data / documents** | POC 2 |
 | **Business rules** | Full project |
-| **Auth** | No XSUAA yet — anyone with the URL can act. Fine for a POC, **not** for real customer data |
+| **App auth (XSUAA)** | The app itself has no gate — anyone with the URL can use the non-Outlook features. Outlook actions require Microsoft sign-in, but the app shell should still get XSUAA before real customer data. |
 
 ### On sending: don't use SMTP
 

@@ -2,7 +2,7 @@ const { v4: uuid } = require('uuid');
 const db = require('../db');
 const agent = require('../agent');
 const config = require('../config');
-const { parseForwardedEmail, buildManualEmail } = require('./parser');
+const { parseForwardedEmail, buildManualEmail, buildEmailFromGraphMessage } = require('./parser');
 
 /**
  * The single funnel every ingestion adapter goes through.
@@ -64,19 +64,15 @@ async function ingestManual({ from, subject, body, mailingGroup }) {
 }
 
 /**
- * Adapter: Microsoft Graph polling. Not wired yet — blocked on the AAD app
- * registration and mailbox. The shape is here so that landing it is one file,
- * not a refactor.
+ * Adapter: a message the CSR picked from their own Outlook inbox (via Graph).
+ * The message is the customer's original, so its From is the sender directly.
  *
- * When enabled:
- *   GET /users/{mailbox}/mailFolders/inbox/messages/delta   (persist deltaLink)
- *   GET /users/{mailbox}/messages/{id}/attachments?$expand=microsoft.graph.itemAttachment/item
- *   -> pass the raw MIME to parseForwardedEmail()
- *   -> dedupe on internetMessageId, then move the message to /Processed
+ * @param {object} graphMsg - full Graph message (from/to/cc/subject/body)
+ * @param {string} selfAddress - the signed-in CSR, excluded from group inference
  */
-async function ingestGraphMessage(rawMime, internetMessageId) {
-  const email = await parseForwardedEmail(rawMime, { agentMailbox: config.agentMailbox });
-  return ingest(email, 'GRAPH_POLL', internetMessageId);
+async function ingestGraphMessage(graphMsg, selfAddress) {
+  const email = buildEmailFromGraphMessage(graphMsg, selfAddress);
+  return ingest(email, 'GRAPH_PICK', graphMsg.internetMessageId || graphMsg.id);
 }
 
 module.exports = { ingest, ingestEml, ingestManual, ingestGraphMessage };

@@ -14,9 +14,33 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json();
 }
 
+export interface AuthStatus {
+  configured: boolean;
+  signedIn: boolean;
+  username: string | null;
+}
+
+export interface InboxMessage {
+  id: string;
+  internetMessageId: string | null;
+  subject: string | null;
+  from: string | null;
+  fromName: string | null;
+  receivedAt: string;
+  preview: string;
+  hasAttachments: boolean;
+}
+
 export const api = {
   health: () => request<{ status: string; aiCore: string }>('/health'),
   stats: () => request<Stats>('/stats'),
+
+  authStatus: () => request<AuthStatus>('/auth/status'),
+  logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
+
+  listInbox: () => request<InboxMessage[]>('/mailbox/messages'),
+  ingestInboxMessage: (id: string) =>
+    request<{ request: CsRequest; deduped: boolean }>(`/mailbox/messages/${id}/ingest`, { method: 'POST' }),
 
   listRequests: (params: { status?: string } = {}) => {
     const query = new URLSearchParams(
@@ -52,7 +76,7 @@ export const api = {
     request<CsRequest>(`/requests/${id}/regenerate`, { method: 'POST', body: JSON.stringify({}) }),
 
   approve: (id: string) =>
-    request<CsRequest>(`/requests/${id}/approve`, { method: 'POST', body: JSON.stringify({}) }),
+    request<CsRequest & { sent?: boolean }>(`/requests/${id}/approve`, { method: 'POST', body: JSON.stringify({}) }),
 
   reject: (id: string, reasonCode: string, comment?: string) =>
     request<CsRequest>(`/requests/${id}/reject`, {

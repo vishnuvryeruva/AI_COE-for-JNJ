@@ -4,6 +4,23 @@ module.exports = {
   aicoreServiceKey: process.env.AICORE_SERVICE_KEY || '',
   aicoreModel: process.env.AICORE_MODEL || 'gpt-4o-mini',
 
+  isProd: process.env.NODE_ENV === 'production',
+  cookieSecret: process.env.COOKIE_SECRET || 'dev-cookie-secret-change-me',
+
+  // Microsoft Graph (delegated). When these are unset the app runs exactly as
+  // before — the Outlook features simply don't appear. The same code points at
+  // a dev tenant or at J&J; only tenantId/clientId/secret/redirectUri change.
+  azure: {
+    clientId: process.env.AZURE_CLIENT_ID || '',
+    clientSecret: process.env.AZURE_CLIENT_SECRET || '',
+    // 'common' works for a multi-tenant dev app; J&J will supply a specific tenant id.
+    tenantId: process.env.AZURE_TENANT_ID || 'common',
+    // Must EXACTLY match the redirect URI registered in Azure AD.
+    redirectUri: process.env.AZURE_REDIRECT_URI || 'http://localhost:8080/api/v1/auth/callback',
+    // Where the browser lands after login completes.
+    postLoginUri: process.env.AZURE_POST_LOGIN_URI || '/',
+  },
+
   // Address the CSRs forward to. Also the default CC when we can't identify a
   // mailing group from the forwarded email.
   agentMailbox: process.env.AGENT_MAILBOX || 'cs-agent@medtech-ai.jnj.com',

@@ -295,6 +295,49 @@ async function parseForwardedEmail(raw, { agentMailbox = '' } = {}) {
   };
 }
 
+/**
+ * A message picked from the CSR's own Outlook inbox (via Graph).
+ *
+ * Unlike a forward, this is the customer's ORIGINAL email — its From header IS
+ * the customer, so there's nothing to recover and confidence is 1.0. The
+ * mailing group is inferred from To/Cc, excluding the signed-in CSR themselves.
+ *
+ * @param {object} graphMsg - Graph message with from/toRecipients/ccRecipients/body
+ * @param {string} selfAddress - the signed-in CSR's address, excluded from group inference
+ */
+function buildEmailFromGraphMessage(graphMsg, selfAddress = '') {
+  const from = graphMsg.from?.emailAddress || {};
+  const toList = (graphMsg.toRecipients || []).map((r) => r.emailAddress?.address).filter(Boolean).map((a) => a.toLowerCase());
+  const ccList = (graphMsg.ccRecipients || []).map((r) => r.emailAddress?.address).filter(Boolean).map((a) => a.toLowerCase());
+
+  const bodyContent = graphMsg.body?.content || '';
+  const body = graphMsg.body?.contentType === 'html' ? htmlToText(bodyContent) : bodyContent;
+
+  const self = (selfAddress || '').toLowerCase();
+  const group = inferMailingGroup([...toList, ...ccList].filter((a) => a !== self), self);
+
+  return {
+    forwardedBy: null,
+    csrNote: null,
+    mailingGroup: group,
+    original: {
+      from: from.address ? from.address.toLowerCase() : null,
+      fromName: from.name || null,
+      to: toList,
+      cc: ccList,
+      subject: graphMsg.subject || null,
+      body: (body || '').trim(),
+      sentAt: graphMsg.receivedDateTime || null,
+      attachments: [],
+    },
+    extraction: {
+      method: 'GRAPH_DIRECT',
+      confidence: from.address ? 1.0 : 0,
+      warnings: from.address ? [] : ['Message had no sender address'],
+    },
+  };
+}
+
 /** Manual paste path — the CSR types the fields, so treat them as given. */
 function buildManualEmail({ from, subject, body, mailingGroup }) {
   const sender = parseAddressLine(from);
@@ -323,6 +366,7 @@ function buildManualEmail({ from, subject, body, mailingGroup }) {
 module.exports = {
   parseForwardedEmail,
   buildManualEmail,
+  buildEmailFromGraphMessage,
   // exported for tests
   findHeaderValue,
   parseAddressLine,

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api } from './api/client';
+import { api, type AuthStatus } from './api/client';
 import type { CsRequest, Stats, Status } from './types';
 import IngestPanel from './components/IngestPanel';
+import MailboxPanel from './components/MailboxPanel';
 import QueueTable from './components/QueueTable';
 import RequestDetail from './components/RequestDetail';
 
@@ -20,6 +21,11 @@ export default function App() {
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [aiCore, setAiCore] = useState<string>('');
+  const [auth, setAuth] = useState<AuthStatus>({ configured: false, signedIn: false, username: null });
+
+  const refreshAuth = useCallback(() => {
+    api.authStatus().then(setAuth).catch(() => {});
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -38,7 +44,8 @@ export default function App() {
 
   useEffect(() => {
     api.health().then((h) => setAiCore(h.aiCore)).catch(() => setAiCore('unknown'));
-  }, []);
+    refreshAuth();
+  }, [refreshAuth]);
 
   const count = (key: Status | 'ALL') =>
     !stats ? 0 : key === 'ALL' ? stats.TOTAL : stats[key];
@@ -51,6 +58,7 @@ export default function App() {
         <span className="spacer" />
         {aiCore === 'stub' && <span className="badge warn">AI Core not bound — keyword stub</span>}
         {aiCore === 'configured' && <span className="badge">AI Core connected</span>}
+        {auth.configured && auth.signedIn && <span className="badge">Outlook: {auth.username}</span>}
       </div>
 
       <div className="container">
@@ -64,6 +72,7 @@ export default function App() {
         {selected ? (
           <RequestDetail
             id={selected}
+            outlookConnected={auth.configured && auth.signedIn}
             onBack={() => setSelected(null)}
             onChanged={() => void refresh()}
             onError={setError}
@@ -83,6 +92,15 @@ export default function App() {
                 </button>
               ))}
             </div>
+
+            {auth.configured && (
+              <MailboxPanel
+                auth={auth}
+                onAuthChange={refreshAuth}
+                onIngested={() => void refresh()}
+                onError={setError}
+              />
+            )}
 
             <IngestPanel onIngested={() => void refresh()} onError={setError} />
 
