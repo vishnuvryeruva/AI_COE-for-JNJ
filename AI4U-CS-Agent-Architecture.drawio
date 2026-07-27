@@ -1,0 +1,109 @@
+<mxfile host="app.diagrams.net" type="device">
+  <diagram id="csagent-oss" name="Open-Source Architecture">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1100" pageHeight="640" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- ===== Group backgrounds (drawn first = behind) ===== -->
+        <mxCell id="gPlatform" value="Container platform — Kubernetes / Docker / VM (open source)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f7fa;strokeColor=#6b7a8f;verticalAlign=top;align=left;spacingLeft=10;spacingTop=6;fontStyle=1;fontSize=13;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="120" width="610" height="450" as="geometry" />
+        </mxCell>
+        <mxCell id="gExternal" value="External systems (unchanged by platform choice)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fdf6ec;strokeColor=#b08d57;verticalAlign=top;align=left;spacingLeft=10;spacingTop=6;fontStyle=1;fontSize=13;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="700" y="250" width="210" height="320" as="geometry" />
+        </mxCell>
+
+        <!-- ===== Nodes ===== -->
+        <mxCell id="csr" value="CSR&#10;(Browser)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="360" y="40" width="180" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="keycloak" value="Keycloak&#10;Identity — OIDC / SAML" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="70" y="150" width="170" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="frontend" value="Frontend&#10;React + nginx" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="360" y="150" width="180" height="56" as="geometry" />
+        </mxCell>
+
+        <mxCell id="litellm" value="LLM gateway&#10;LiteLLM" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="70" y="290" width="170" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="api" value="Backend API&#10;Node / Express" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="360" y="290" width="180" height="56" as="geometry" />
+        </mxCell>
+
+        <mxCell id="model" value="Self-hosted model&#10;vLLM / Ollama&#10;(Llama / Mistral)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="70" y="395" width="170" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="monitoring" value="Observability&#10;Prometheus / Grafana / Loki" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eeeeee;strokeColor=#7d7d7d;" vertex="1" parent="1">
+          <mxGeometry x="70" y="500" width="170" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="postgres" value="PostgreSQL + pgvector" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=12;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="360" y="495" width="180" height="62" as="geometry" />
+        </mxCell>
+
+        <mxCell id="workflow" value="Ingestion / workflow (optional)&#10;n8n or Apache Camel" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="700" y="165" width="180" height="54" as="geometry" />
+        </mxCell>
+        <mxCell id="o365" value="Microsoft 365 / Exchange&#10;(Outlook mailboxes)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="730" y="290" width="150" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="sap" value="SAP S/4HANA + EWM&#10;(system of record)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="730" y="495" width="150" height="62" as="geometry" />
+        </mxCell>
+
+        <!-- ===== Edges ===== -->
+        <mxCell id="e1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#4d5b6a;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="csr" target="frontend">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" value="OIDC / token validation" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;startArrow=block;endArrow=block;strokeColor=#b85450;fontSize=10;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" edge="1" parent="1" source="frontend" target="keycloak">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#4d5b6a;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="frontend" target="api">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" value="prompt" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;startArrow=block;endArrow=block;strokeColor=#9673a6;fontSize=10;exitX=0;exitY=0.4;entryX=1;entryY=0.5;" edge="1" parent="1" source="api" target="litellm">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e6" value="inference" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;startArrow=block;endArrow=block;strokeColor=#9673a6;fontSize=10;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="litellm" target="model">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#4d5b6a;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="api" target="postgres">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e7" value="metrics / logs" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;strokeColor=#7d7d7d;fontSize=10;exitX=0;exitY=0.75;entryX=1;entryY=0.3;" edge="1" parent="1" source="api" target="monitoring">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="300" y="332" />
+              <mxPoint x="300" y="517" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e8" value="Graph API: read inbox + sendMail" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;startArrow=block;endArrow=block;strokeColor=#c9a227;fontSize=10;exitX=1;exitY=0.4;entryX=0;entryY=0.5;" edge="1" parent="1" source="api" target="o365">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e9" value="OData REST (Phase 2)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;strokeColor=#c9a227;fontSize=10;exitX=1;exitY=0.75;entryX=0;entryY=0.3;" edge="1" parent="1" source="api" target="sap">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="620" y="332" />
+              <mxPoint x="620" y="513" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e10" value="poll / forward" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;startArrow=block;endArrow=block;dashed=1;strokeColor=#666666;fontSize=10;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="workflow" target="o365">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e11" value="auto-ingest (optional)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;strokeColor=#666666;fontSize=10;exitX=0;exitY=0.5;entryX=0.9;entryY=0;" edge="1" parent="1" source="workflow" target="api">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="620" y="192" />
+              <mxPoint x="522" y="255" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

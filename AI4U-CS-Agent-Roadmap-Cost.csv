@@ -1,0 +1,22 @@
+Phase,Item,Description,Workstream,Status,Effort (person-weeks),Dependency / Gate,Cost driver,Notes
+P0,Email ingestion,"Pick from Outlook, forward .eml, or paste — one pluggable pipeline",Front end,Done,Spent,None,BTP CF runtime,Reusable across other AI4U use cases
+P0,Original-sender recovery,"Recover who to reply to from a forwarded email, multi-language",Front end,Done,Spent,None,-,Load-bearing; degrades to review not a crash
+P0,AI intent + draft,SAP AI Core detects request type / order number and drafts reply,Front end,Done,Spent,AI Core (have it),AI Core tokens,Multilingual works (German verified)
+P0,Human approve + audit,Rep reviews / edits / approves; full audit trail,Front end,Done,Spent,None,-,Nothing sends without approval
+P0,Send via Outlook,Approved reply sent through Microsoft Graph (delegated),Front end,Done,Spent,Dev-tenant sign-in,-,Sends from the rep; lands in Sent Items
+P0,BTP deployment,Single Docker image on BTP Cloud Foundry,Front end,Done,Spent,BTP sandbox (have it),BTP CF runtime,Same pattern as Sales Intelligence app
+P1,J&J mailbox connection,Connect the live J&J mailbox via Outlook/Graph,Front end + IT,Blocked,2-3,Azure AD app registration (delegated),MS licensing,Long lead is IT approval not code
+P1,Forward-to-mailbox auto-ingest,Rep forwards to an address; app polls and auto-ingests,Front end + IT,Not started,2-3,Dedicated mailbox + application Graph permission,MS mailbox,Bigger permission ask than delegated; optional
+P1,App-level auth (XSUAA),Gate the app itself with J&J SSO,Front end,Not started,1-2,IAS/XSUAA setup,BTP auth service,Required before real customer data
+P2,SAP API layer,API over S/4HANA + EWM for order / delivery / shipment,Integration,Not started,4-8,SAP dev system + EDC data,Integration Suite,Owned by integration team (Sujeeth/Prashanth)
+P2,Document retrieval,Fetch packing list / invoice / POD / shipment docs,Integration,Not started,2-4,SAP output mgmt / content repo,Integration Suite,The core value unlock
+P2,Attach + ground the draft,Attach real docs; draft real order status (no invented data),Front end,Not started,2-3,P2 API layer,AI Core tokens,Removes the POC1 no-ERP-data constraint
+P3,Entitlement rules engine,"Deterministic rules: who is asking -> which docs allowed",Integration,Not started,2-3,Named business owner,-,Cannot live in an AI prompt
+P3,Rules authoring,Business defines & owns the actual rules,Business,Not started,TBD,Business owner assigned,-,Effort is authoring/ownership not code
+P4,Production database,Move from bundled Postgres to HANA Cloud,Front end,Not started,1-2,HANA Cloud entitlement,HANA Cloud,Code already DB-swappable
+P4,Audit & validation,"Compliance-grade audit; GxP validation if applicable",All,Not started,3-8,GxP determination,Validation effort,Range wide until GxP status known
+P4,Monitoring & error handling,Production observability and failure handling,Front end,Not started,2-3,None,BTP services,-
+P4,Analytics dashboard,"Volume, accuracy, time-saved reporting",Front end,Not started,2-3,None,-,Produces the ROI number leadership wants
+P4,Multi-CSR / multi-franchise rollout,Scale to more reps and franchises,All,Not started,2-4,Pilot success,BTP scale,Per-CSR queue model already supported
+DEP,AI4U seed funding,SAP program funding to offset cost,Sponsor,Open,-,SAP confirmation,Offset,Confirm envelope for business case
+DEP,Data privacy sign-off,Customer PII in email content,Compliance,Open,-,J&J Privacy intake,-,Start early; long lead if left late
