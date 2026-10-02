@@ -27,7 +27,11 @@ export default function IngestPanel({ onIngested, onError }: Props) {
   }
 
   async function uploadFiles(files: FileList | null) {
-    if (!files?.length) return;
+    if (busy || !files?.length) return;
+    if (Array.from(files).some((file) => !file.name.toLowerCase().endsWith('.eml'))) {
+      onError('Choose a saved .eml email. Outlook .msg files are not supported.');
+      return;
+    }
     await run(async () => {
       for (const file of Array.from(files)) {
         await api.uploadEml(file);
@@ -38,8 +42,8 @@ export default function IngestPanel({ onIngested, onError }: Props) {
   return (
     <div className="panel">
       <div className="panel-head">
-        <h2>Ingest an email</h2>
-        <span className="sub">Forwarded .eml, or type one in</span>
+        <h2>Manual import</h2>
+        <span className="sub">Use a saved email or enter its contents</span>
         <span className="spacer" />
         <button className="btn sm" disabled={busy} onClick={() => run(api.loadScenarios)}>
           Load scenario emails
@@ -57,13 +61,14 @@ export default function IngestPanel({ onIngested, onError }: Props) {
             void uploadFiles(e.dataTransfer.files);
           }}
           onClick={() => fileInput.current?.click()}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.current?.click(); } }}
           role="button"
           tabIndex={0}
         >
           <input
             ref={fileInput}
             type="file"
-            accept=".eml,.msg,message/rfc822"
+            accept=".eml,message/rfc822"
             multiple
             hidden
             onChange={(e) => void uploadFiles(e.target.files)}
@@ -82,18 +87,18 @@ export default function IngestPanel({ onIngested, onError }: Props) {
           <div style={{ marginTop: 12 }}>
             <div className="row">
               <div className="field">
-                <label htmlFor="from">From</label>
+                <label htmlFor="manual-from">From</label>
                 <input
-                  id="from"
+                  id="manual-from"
                   value={from}
                   placeholder="John Smith &lt;john.smith@acmecorp.com&gt;"
                   onChange={(e) => setFrom(e.target.value)}
                 />
               </div>
               <div className="field">
-                <label htmlFor="subject">Subject</label>
+                <label htmlFor="manual-subject">Subject</label>
                 <input
-                  id="subject"
+                  id="manual-subject"
                   value={subject}
                   placeholder="Please send Packing List"
                   onChange={(e) => setSubject(e.target.value)}
@@ -101,9 +106,9 @@ export default function IngestPanel({ onIngested, onError }: Props) {
               </div>
             </div>
             <div className="field">
-              <label htmlFor="body">Body</label>
+              <label htmlFor="manual-body">Body</label>
               <textarea
-                id="body"
+                id="manual-body"
                 value={body}
                 placeholder="Can you please send packing list for order 5003000237."
                 onChange={(e) => setBody(e.target.value)}

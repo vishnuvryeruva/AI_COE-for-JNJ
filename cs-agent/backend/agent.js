@@ -1,5 +1,6 @@
 const aiCore = require('./ai-core');
 const config = require('./config');
+const { extractOrderNumbers } = require('./msgraph/mailbox-query');
 
 /**
  * POC 1 scope (Pramod, 2026-07-15): "ingest the email, know the intent and
@@ -9,6 +10,7 @@ const config = require('./config');
  */
 
 const INTENTS = {
+  SALES_ORDER_REQUEST: 'Sales Order Request',
   ORDER_STATUS: 'Order Status Inquiry',
   PACKING_LIST_REQUEST: 'Packing List Request',
   INVOICE_REQUEST: 'Invoice Request',
@@ -62,12 +64,14 @@ function reply(email) {
 /** Deterministic fallback so ingestion still works when AI Core isn't bound. */
 function stubAnalysis(email) {
   const text = `${email.original.subject || ''} ${email.original.body || ''}`;
-  const orderNumber = (text.match(/\b\d{10}\b/) || [])[0] || null;
+  const orderNumber = extractOrderNumbers(text)[0] || (text.match(/\b\d{10}\b/) || [])[0] || null;
 
   let intent = 'OTHER';
   if (/packing\s*list/i.test(text)) intent = 'PACKING_LIST_REQUEST';
   else if (/invoice/i.test(text)) intent = 'INVOICE_REQUEST';
+  else if (/proof\s+of\s+delivery|\bPOD\b/i.test(text)) intent = 'PROOF_OF_DELIVERY';
   else if (/track|shipment|where is/i.test(text)) intent = 'SHIPMENT_TRACKING';
+  else if (/\b(?:new|place|placing|submit|submitting|create)\s+(?:(?:a|the)\s+)?(?:(?:sales|purchase)\s+)?order\b|\bpurchase\s+order\s+(?:attached|enclosed)\b/i.test(text)) intent = 'SALES_ORDER_REQUEST';
   else if (/status|order/i.test(text)) intent = 'ORDER_STATUS';
 
   return {

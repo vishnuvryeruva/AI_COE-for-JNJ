@@ -1,15 +1,28 @@
 import type { CsRequest, Stats } from '../types';
 
-const BASE = import.meta.env.VITE_API_URL || '/api/v1';
+const BASE = (import.meta.env.VITE_API_URL || '/api/v1').replace(/\/$/, '');
+
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code?: string;
+
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE}${path}`, {
+    credentials: 'include',
     ...init,
     headers: init?.body instanceof FormData ? init.headers : { 'Content-Type': 'application/json', ...init?.headers },
   });
   if (!response.ok) {
     const detail = await response.json().catch(() => ({ error: response.statusText }));
-    throw new Error(detail.error || `Request failed: ${response.status}`);
+    throw new ApiError(detail.error || `Request failed: ${response.status}`, response.status, detail.code);
   }
   return response.json();
 }
@@ -31,16 +44,43 @@ export interface InboxMessage {
   hasAttachments: boolean;
 }
 
+export interface MailboxMatch extends InboxMessage {
+  matchReason: string;
+  orderNumbers: string[];
+}
+
+export interface MailboxSearchResult {
+  query: {
+    label: string;
+    terms: string[];
+    orderNumber: string | null;
+    since: string | null;
+    before: string | null;
+    sender: string | null;
+  };
+  messages: MailboxMatch[];
+  scanned: number;
+  limited: boolean;
+  scope: string;
+}
+
 export const api = {
   health: () => request<{ status: string; aiCore: string }>('/health'),
   stats: () => request<Stats>('/stats'),
 
   authStatus: () => request<AuthStatus>('/auth/status'),
+  authLoginUrl: `${BASE}/auth/login`,
   logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
 
   listInbox: () => request<InboxMessage[]>('/mailbox/messages'),
+  searchMailbox: (prompt: string, signal?: AbortSignal) =>
+    request<MailboxSearchResult>('/mailbox/search', {
+      method: 'POST',
+      body: JSON.stringify({ prompt }),
+      signal,
+    }),
   ingestInboxMessage: (id: string) =>
-    request<{ request: CsRequest; deduped: boolean }>(`/mailbox/messages/${id}/ingest`, { method: 'POST' }),
+    request<{ request: CsRequest; deduped: boolean }>(`/mailbox/messages/${encodeURIComponent(id)}/ingest`, { method: 'POST' }),
 
   listRequests: (params: { status?: string } = {}) => {
     const query = new URLSearchParams(

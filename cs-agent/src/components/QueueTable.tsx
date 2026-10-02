@@ -4,13 +4,16 @@ import { STATUS_LABEL, STATUS_TONE, confidenceTone, formatDate, pct, senderLabel
 interface Props {
   requests: CsRequest[];
   onOpen: (id: string) => void;
+  filtered?: boolean;
 }
 
-export default function QueueTable({ requests, onOpen }: Props) {
+export default function QueueTable({ requests, onOpen, filtered = false }: Props) {
   if (requests.length === 0) {
     return (
       <div className="empty">
-        No requests yet. Drop a forwarded <span className="mono">.eml</span> above, or load the scenario emails.
+        <span className="empty-icon" aria-hidden="true">↳</span>
+        <strong>{filtered ? 'No requests in this view' : 'Your next action starts in Outlook'}</strong>
+        <p>{filtered ? 'Choose another status to see more requests.' : 'Find emails above, then prepare a draft to add a request to your queue.'}</p>
       </div>
     );
   }

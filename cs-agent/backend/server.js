@@ -12,6 +12,7 @@ const agent = require('./agent');
 const { scenarios } = require('./scenarios');
 const graphAuth = require('./msgraph/auth');
 const graph = require('./msgraph/graph');
+const { createSearchHandler } = require('./msgraph/mailbox');
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 32 * 1024 * 1024 } });
@@ -79,6 +80,12 @@ api.post('/auth/logout', wrap(async (req, res) => {
 }));
 
 // --- Mailbox (the signed-in CSR's own inbox) ---
+
+api.post('/mailbox/search', createSearchHandler({
+  isConfigured: graphAuth.isConfigured,
+  tokenFor: graphTokenFor,
+  searchInbox: graph.searchInbox,
+}));
 
 api.get('/mailbox/messages', wrap(async (req, res) => {
   const token = await graphTokenFor(req);
@@ -216,7 +223,7 @@ db.init()
     app.listen(PORT, () => {
       console.log(`[server] CS Agent API on :${PORT}`);
       console.log(`[server] AI Core: ${aiCore.isConfigured() ? 'configured' : 'NOT configured — using keyword stub'}`);
-      console.log(`[server] Outlook/Graph: ${graphAuth.isConfigured() ? `configured (tenant ${config.azure.tenantId})` : 'NOT configured — Outlook features hidden'}`);
+      console.log(`[server] Outlook/Graph: ${graphAuth.isConfigured() ? `configured (tenant ${config.azure.tenantId})` : 'NOT configured — Outlook setup required'}`);
       console.log(`[server] Agent mailbox: ${config.agentMailbox}`);
     });
   })

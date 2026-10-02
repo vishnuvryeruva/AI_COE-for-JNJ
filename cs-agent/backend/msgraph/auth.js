@@ -12,7 +12,7 @@ const db = require('../db');
  *
  * The same code runs against a dev tenant or against J&J — only the tenantId /
  * clientId / secret / redirectUri differ. Until those are set, isConfigured()
- * is false and the whole Outlook surface stays hidden.
+ * is false and the UI shows Outlook connection setup guidance.
  */
 
 const SCOPES = ['User.Read', 'Mail.Read', 'Mail.Send', 'offline_access'];

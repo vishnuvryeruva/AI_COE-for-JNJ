@@ -8,7 +8,7 @@ module.exports = {
   cookieSecret: process.env.COOKIE_SECRET || 'dev-cookie-secret-change-me',
 
   // Microsoft Graph (delegated). When these are unset the app runs exactly as
-  // before — the Outlook features simply don't appear. The same code points at
+  // before — the Outlook workspace shows setup guidance. The same code points at
   // a dev tenant or at J&J; only tenantId/clientId/secret/redirectUri change.
   azure: {
     clientId: process.env.AZURE_CLIENT_ID || '',

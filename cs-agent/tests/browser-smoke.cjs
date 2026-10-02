@@ -1,0 +1,284 @@
+#!/usr/bin/env node
+/*
+ * Outlook UI smoke tests. Every API call is intercepted; this cannot read an
+ * actual mailbox, call SAP, or send an email. Requires Playwright and Chrome:
+ * PLAYWRIGHT_PATH=/path/to/playwright CHROME_PATH=/path/to/chrome npm run smoke
+ * Set SMOKE_BASE_URL to reuse a Vite server; otherwise starts one on port 5174.
+ */
+const assert = require('node:assert/strict');
+const { spawn } = require('node:child_process');
+const path = require('node:path');
+const { chromium } = require(process.env.PLAYWRIGHT_PATH || 'playwright');
+
+const project = path.resolve(__dirname, '..');
+const baseURL = process.env.SMOKE_BASE_URL || 'http://127.0.0.1:5174';
+const screenshotDirectory = process.env.SMOKE_SCREENSHOT_DIR || '/tmp';
+const messageFixtures = [
+  { id: 'mail-new', subject: 'SAP sales order 4500012345', from: 'customer@example.com', fromName: 'Customer services', orderNumbers: ['4500012345'] },
+  { id: 'mail-existing', subject: 'Sales order 4500012346 follow-up', from: 'buyer@example.com', fromName: 'Purchasing', orderNumbers: ['4500012346'] },
+  { id: 'mail-failure', subject: 'SAP sales order 4500012347 delivery', from: 'orders@example.com', fromName: 'Order management', orderNumbers: ['4500012347'] },
+].map((message) => ({
+  ...message,
+  internetMessageId: `<${message.id}@example.com>`,
+  receivedAt: '2026-09-30T12:00:00Z',
+  preview: `Please confirm the status of SAP sales order ${message.orderNumbers[0]}.`,
+  hasAttachments: true,
+  matchReason: 'Sales order reference in subject and message body',
+}));
+
+function requestFixture(message) {
+  return {
+    id: `request-${message.id}`,
+    status: 'READY', statusReason: null, source: 'OUTLOOK',
+    receivedAt: message.receivedAt, forwardedBy: null, csrNote: null, mailingGroup: null,
+    email: {
+      from: message.from, fromName: message.fromName, to: ['support@example.com'], cc: [],
+      subject: message.subject, body: message.preview, sentAt: message.receivedAt,
+      attachments: [{ name: 'order.pdf', mime: 'application/pdf', size: 100 }],
+    },
+    extraction: { method: 'BODY_PARSE', confidence: 1, warnings: [] },
+    analysis: {
+      intent: 'ORDER_STATUS', intentLabel: 'Order status', confidence: 0.98,
+      reasoning: 'Customer asks about an SAP sales order.', orderNumber: message.orderNumbers[0],
+      deliveryNumber: null, language: 'English', requesterType: 'Customer',
+    },
+    draft: { to: message.from, cc: [], subject: `Re: ${message.subject}`, body: 'We are reviewing your sales order request.' },
+    audit: [],
+  };
+}
+
+async function expectVisible(locator) { await locator.waitFor({ state: 'visible' }); }
+async function expectText(locator, expression) {
+  await locator.filter({ hasText: expression }).first().waitFor({ state: 'visible' });
+}
+async function checkNoOverflow(page, name) {
+  const dimensions = await page.evaluate(() => ({ viewport: innerWidth, document: document.documentElement.scrollWidth }));
+  if (dimensions.document > dimensions.viewport + 1) {
+    const overflowing = await page.evaluate(() => Array.from(document.querySelectorAll('body *'))
+      .filter((element) => element.getBoundingClientRect().right > innerWidth + 1)
+      .slice(0, 8)
+      .map((element) => ({ tag: element.tagName, class: element.className, width: Math.round(element.getBoundingClientRect().width) })));
+    assert.fail(`${name}: horizontal overflow ${JSON.stringify({ ...dimensions, overflowing })}`);
+  }
+}
+
+async function startServer() {
+  if (process.env.SMOKE_BASE_URL) return null;
+  const child = spawn(process.execPath, [path.join(project, 'node_modules/vite/bin/vite.js'), '--host', '127.0.0.1', '--port', '5174', '--strictPort'], {
+    cwd: project, env: { ...process.env, VITE_API_URL: '/api/v1' }, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let output = '';
+  child.stdout.on('data', (chunk) => { output += chunk; });
+  child.stderr.on('data', (chunk) => { output += chunk; });
+  try {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (child.exitCode !== null) throw new Error(`Vite exited: ${output}`);
+      try {
+        if ((await fetch(baseURL)).ok) return child;
+      } catch { /* Vite is starting. */ }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(`Vite did not start: ${output}`);
+  } catch (error) {
+    child.kill('SIGTERM');
+    throw error;
+  }
+}
+
+async function scenario(browser, auth, run) {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  const page = await context.newPage();
+  page.setDefaultTimeout(8000);
+  const state = { auth: { ...auth }, requests: [], apiCalls: [], unexpected: [], errors: [], ingested: [], prompts: [], failThird: true, releaseSearch: null };
+  page.on('pageerror', (error) => state.errors.push(error.message));
+  await context.route('**/*', async (route) => {
+    const req = route.request();
+    const url = new URL(req.url());
+    if (!url.pathname.startsWith('/api/v1/')) {
+      if (url.origin === new URL(baseURL).origin) return route.continue();
+      state.unexpected.push(`External network request: ${req.url()}`);
+      return route.abort();
+    }
+    const endpoint = url.pathname.slice('/api/v1'.length);
+    const call = `${req.method()} ${endpoint}`;
+    state.apiCalls.push(call);
+    const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (call === 'GET /health') return json({ status: 'ok', aiCore: 'configured' });
+    if (call === 'GET /auth/status') return json(state.auth);
+    if (call === 'POST /auth/logout') {
+      state.auth.signedIn = false; state.auth.username = null;
+      return json({ ok: true });
+    }
+    if (call === 'GET /requests') return json(state.requests.filter((item) => !url.searchParams.has('status') || item.status === url.searchParams.get('status')));
+    if (call === 'GET /stats') return json({ READY: state.requests.length, NEEDS_REVIEW: 0, FAILED: 0, SENT: 0, REJECTED: 0, TOTAL: state.requests.length });
+    if (call === 'POST /mailbox/search') {
+      const body = req.postDataJSON();
+      assert.equal(typeof body.prompt, 'string');
+      state.prompts.push(body.prompt);
+      if (/expired session/i.test(body.prompt)) {
+        // Simulate a persisted auth session whose Microsoft token has expired.
+        // /auth/status deliberately remains signed in after the Graph failure.
+        return json({ error: 'Your Outlook session expired. Reconnect your mailbox.', code: 'OUTLOOK_AUTH_REQUIRED' }, 401);
+      }
+      if (/slow search/i.test(body.prompt)) {
+        await new Promise((resolve) => { state.releaseSearch = resolve; });
+      }
+      return json({
+        query: { label: 'SAP sales orders', terms: ['sales order'], orderNumber: null, since: null, before: null, sender: null },
+        messages: /zero matches/i.test(body.prompt) ? [] : messageFixtures,
+        scanned: 25, limited: true, scope: 'inbox',
+      });
+    }
+    const ingestMatch = endpoint.match(/^\/mailbox\/messages\/([^/]+)\/ingest$/);
+    if (req.method() === 'POST' && ingestMatch) {
+      const message = messageFixtures.find((item) => item.id === ingestMatch[1]);
+      assert.ok(message, `Known message: ${ingestMatch[1]}`);
+      state.ingested.push(message.id);
+      if (message.id === 'mail-failure' && state.failThird) return json({ error: 'Temporary mailbox processing failure' }, 502);
+      const draft = requestFixture(message);
+      if (!state.requests.some((item) => item.id === draft.id)) state.requests.push(draft);
+      return json({ request: draft, deduped: message.id === 'mail-existing' });
+    }
+    const detailMatch = endpoint.match(/^\/requests\/([^/]+)$/);
+    if (req.method() === 'GET' && detailMatch) {
+      const draft = state.requests.find((item) => item.id === detailMatch[1]);
+      assert.ok(draft, `Known request: ${detailMatch[1]}`);
+      return json(draft);
+    }
+    state.unexpected.push(call);
+    return json({ error: `Unexpected API call blocked by browser smoke: ${call}` }, 500);
+  });
+  try {
+    await page.goto(baseURL);
+    await run(page, state);
+    assert.deepEqual(state.unexpected, [], 'Only expected local resources and intercepted APIs were requested');
+    assert.deepEqual(state.errors, [], 'No browser runtime errors');
+    assert.ok(!state.apiCalls.some((call) => /approve|send|regenerate|manual|upload/.test(call)), 'Searching and preparing never sends email or creates manual uploads');
+  } catch (error) {
+    await page.screenshot({ path: path.join(screenshotDirectory, 'cs-agent-ui-failure.png'), fullPage: true }).catch(() => {});
+    if (state.errors.length || state.unexpected.length) console.error({ pageErrors: state.errors, blockedRequests: state.unexpected });
+    throw error;
+  } finally {
+    if (state.releaseSearch) state.releaseSearch();
+    await context.close();
+  }
+}
+
+async function main() {
+  const server = await startServer();
+  let browser;
+  try {
+    browser = await chromium.launch({
+      headless: true,
+      ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}),
+    });
+
+    await scenario(browser, { configured: false, signedIn: false, username: null }, async (page, state) => {
+      await expectVisible(page.getByText('Outlook setup required', { exact: true }));
+      assert.equal(await page.getByRole('link', { name: 'Connect Outlook', exact: true }).count(), 0);
+      assert.equal(state.prompts.length, 0);
+      await checkNoOverflow(page, 'Unconfigured desktop');
+      await page.screenshot({ path: path.join(screenshotDirectory, 'cs-agent-ui-setup.png'), fullPage: true });
+    });
+    console.log('PASS: Outlook setup is visible when unconfigured.');
+
+    await scenario(browser, { configured: true, signedIn: false, username: null }, async (page) => {
+      const connect = page.getByRole('link', { name: 'Connect Outlook', exact: true });
+      await expectVisible(connect);
+      assert.equal(await connect.getAttribute('href'), '/api/v1/auth/login');
+      await checkNoOverflow(page, 'Signed-out desktop');
+    });
+    console.log('PASS: Configured Outlook exposes the Microsoft sign-in link.');
+
+    await scenario(browser, { configured: true, signedIn: true, username: 'csr@example.com' }, async (page, state) => {
+      const prompt = page.getByRole('textbox', { name: 'Describe the emails to find' });
+      const search = page.getByRole('button', { name: 'Find emails', exact: true });
+      await expectVisible(prompt);
+      await prompt.fill('Find SAP sales orders from email with zero matches');
+      await search.click();
+      await expectText(page.locator('body'), /no (matching|emails|results)/i);
+      assert.equal(state.ingested.length, 0, 'A search only finds messages');
+
+      const naturalPrompt = 'Find SAP sales orders from email received this week';
+      await prompt.fill(naturalPrompt);
+      await search.click();
+      await expectVisible(page.getByRole('heading', { name: /^Matching emails/ }));
+      const first = page.getByRole('article', { name: messageFixtures[0].subject, exact: true });
+      const second = page.getByRole('article', { name: messageFixtures[1].subject, exact: true });
+      const third = page.getByRole('article', { name: messageFixtures[2].subject, exact: true });
+      await expectVisible(first);
+      assert.equal(state.prompts.at(-1), naturalPrompt, 'The natural-language command reaches the server unchanged');
+      assert.equal(state.ingested.length, 0, 'Displaying matches does not prepare or send without user action');
+
+      await first.getByRole('button', { name: 'Prepare draft', exact: true }).click();
+      await expectVisible(first.getByRole('button', { name: 'Review draft', exact: true }));
+      assert.deepEqual(state.ingested, ['mail-new']);
+      await page.getByRole('button', { name: 'Prepare all drafts', exact: true }).click();
+      await expectText(second, 'Already in review');
+      await expectText(third.getByRole('alert'), 'Temporary mailbox processing failure');
+      assert.deepEqual(state.ingested, ['mail-new', 'mail-existing', 'mail-failure'], 'Batch preparation skips successful requests and continues through a partial failure');
+      await expectVisible(first.getByRole('button', { name: 'Review draft', exact: true }));
+      await expectVisible(second.getByRole('button', { name: 'Review draft', exact: true }));
+
+      await page.screenshot({ path: path.join(screenshotDirectory, 'cs-agent-ui-partial-failure.png'), fullPage: true });
+
+      state.failThird = false;
+      await third.getByRole('button', { name: 'Retry draft', exact: true }).click();
+      await expectVisible(third.getByRole('button', { name: 'Review draft', exact: true }));
+      assert.equal(state.ingested.filter((id) => id === 'mail-new').length, 1, 'Retry preserves prepared drafts');
+      await checkNoOverflow(page, 'Search results desktop');
+      await page.screenshot({ path: path.join(screenshotDirectory, 'cs-agent-ui-desktop.png'), fullPage: true });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await checkNoOverflow(page, 'Search results mobile');
+      await page.screenshot({ path: path.join(screenshotDirectory, 'cs-agent-ui-mobile.png'), fullPage: true });
+      await first.getByRole('button', { name: 'Review draft', exact: true }).click();
+      await expectVisible(page.getByRole('heading', { name: /Draft response/ }));
+      await expectVisible(page.getByRole('button', { name: 'Approve & send via Outlook', exact: true }));
+      await checkNoOverflow(page, 'Review mobile');
+      await page.getByRole('button', { name: /Back to queue/ }).click();
+      await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+      await expectVisible(page.getByRole('link', { name: 'Connect Outlook', exact: true }));
+    });
+    console.log('PASS: Natural-language search, empty/matching results, individual/bulk preparation, deduplication, partial failure and retry, draft review, sign-out, and mobile layout.');
+
+    await scenario(browser, { configured: true, signedIn: true, username: 'csr@example.com' }, async (page, state) => {
+      const prompt = page.getByRole('textbox', { name: 'Describe the emails to find' });
+      const search = page.getByRole('button', { name: 'Find emails', exact: true });
+      await expectVisible(prompt);
+      await prompt.fill('Find sales orders from email — slow search');
+      await search.click();
+      const busy = page.getByRole('button', { name: 'Finding emails…', exact: true });
+      await expectVisible(busy);
+      assert.equal(await busy.isDisabled(), true);
+      assert.equal(await prompt.isDisabled(), true, 'The active search prompt cannot change before its response');
+      assert.equal(await page.getByRole('button', { name: 'Invoices', exact: true }).isDisabled(), true);
+      assert.equal(await page.getByRole('button', { name: 'Sign out', exact: true }).isDisabled(), true);
+      await expectText(page.getByRole('status'), 'Searching your Outlook inbox');
+      // Wait for the intercepted request itself, not just React's busy state.
+      for (let attempt = 0; !state.releaseSearch && attempt < 100; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.ok(state.releaseSearch, 'The deferred search reached the server');
+      state.releaseSearch();
+      state.releaseSearch = null;
+      await expectVisible(page.getByRole('article', { name: messageFixtures[0].subject, exact: true }));
+      await prompt.fill('Find invoices from email');
+      assert.equal(await page.getByRole('article').count(), 0, 'Editing the command clears previous search results');
+      assert.equal(state.prompts.length, 1, 'Editing the command alone does not issue another search');
+      await prompt.fill('');
+      assert.equal(await search.isDisabled(), true, 'An empty command cannot search the inbox');
+      await prompt.fill('Find sales orders with an expired session');
+      await search.click();
+      await expectVisible(page.getByRole('heading', { name: 'Reconnect your Outlook mailbox', exact: true }));
+      await expectVisible(page.getByRole('link', { name: 'Connect Outlook', exact: true }));
+      await expectText(page.getByRole('alert'), /session has expired/);
+      assert.equal(await search.isDisabled(), true, 'An expired token cannot keep searching even if auth status is stale');
+    });
+    console.log('PASS: Deferred-search busy controls, prompt-change invalidation, blank command validation, and expired-session reconnection.');
+    console.log('PASS: No live Outlook/SAP calls or email-send actions; all APIs were intercepted.');
+    console.log(`Screenshots: ${path.join(screenshotDirectory, 'cs-agent-ui-desktop.png')}, ${path.join(screenshotDirectory, 'cs-agent-ui-mobile.png')}`);
+  } finally {
+    if (browser) await browser.close();
+    if (server) server.kill('SIGTERM');
+  }
+}
+
+main().catch((error) => { console.error(error); process.exitCode = 1; });

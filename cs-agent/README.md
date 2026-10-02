@@ -1,19 +1,35 @@
-# AI4U CS Agent — POC 1
+# AI4U Email Operations
 
-Ingest a forwarded customer email → detect intent → draft a reply → human approves.
+Ask for customer emails in Outlook → identify requests and order references → prepare reply drafts → review and approve.
 
-**Scope is deliberately narrow.** Pramod, 2026-07-15: *"First, we need to ingest the email, know the intent and draft an email. That is my first POC."* No ERP calls, no document retrieval — that's POC 2. Business rules are the full project.
+Outlook search is the primary workflow. Saved email uploads, manual entry, and sample emails remain under **Import an email manually**. No live ERP calls or SAP document retrieval are implemented.
 
 The point of POC 1 is to retire the risk he named: *"everybody challenged with this — email integration, SMTP not being supported... Everybody's failing there. So if we can crack that nut."*
 
 ## What works today
 
-- **Ingest** three ways: pick an email from a connected **Outlook inbox**, drag-drop a forwarded `.eml`, or type one in
+- **Find emails in Outlook** by describing the request, such as **“Find sales orders from email”**, **“Find invoices this week”**, or **“Find packing lists for order 5003000237”**
+- **Inspect matches** with sender, subject, message preview, matching reason, and order references found in the email
+- **Prepare drafts** for one or all matches; existing requests are reused and individual failures can be retried
+- **Import manually** as a secondary option: upload a forwarded `.eml`, type an email, or load sample scenarios
 - **Recover the original sender** from the forward — the load-bearing part
 - **Detect intent** + extract the order number via SAP AI Core
 - **Draft a reply** addressed per the rule below
 - **Review and approve** — and, when signed in to Outlook, **actually send** the reply via Microsoft Graph
 - **Full audit trail**; runs as **one Docker image** on BTP Cloud Foundry
+
+## Outlook search workflow
+
+1. Configure Microsoft Graph using the instructions below, then select **Connect Outlook** and sign in.
+2. Enter a request in **Describe the emails to find**, or select an example, and choose **Find emails**.
+3. Inspect the matching messages and extracted order references. Choose **Prepare draft** or **Prepare all drafts** to classify the emails and add them to the work queue.
+4. Open **Review draft**, check the sender and content, and approve the reply when ready.
+
+Search uses deterministic SAP/customer-service terms and reads up to **200 recent Inbox messages**, including full message bodies. Results display the applied query, scan count, and whether the scan was limited. It does not search attachment contents, other folders, shared mailboxes, or SAP itself. Order references are copied from email text and are not validated against SAP. Search runs on request; it is not a background mailbox subscription.
+
+`POST /api/v1/mailbox/search` accepts `{ "prompt": "Find sales orders from email" }` and requires an Outlook session. Supported topics include sales/purchase orders, order status, invoices, packing lists, deliveries, shipment tracking, and proof of delivery. Supported date and sender qualifiers are returned in the interpreted query; unsupported queries return an actionable error. Calendar date filters use UTC.
+
+Neither searching nor preparing drafts sends mail. Reply sending remains an explicit action in the review screen. SAP AI Core classifies messages and drafts acknowledgements when configured; otherwise the existing low-confidence keyword fallback is used.
 
 ## Ingestion is pluggable
 
@@ -21,7 +37,7 @@ Every path produces one normalized email object; the rest of the app doesn't kno
 
 | Adapter | How the email arrives | Sender confidence |
 |---|---|---|
-| `GRAPH_PICK` | CSR picks it from their own Outlook inbox | 1.0 — structured Graph headers |
+| `GRAPH_PICK` | A matching email is retrieved directly from the signed-in Outlook inbox | 1.0 — structured Graph headers |
 | `RFC822_ATTACHMENT` | Forward as Attachment (Ctrl+Alt+F) | 1.0 |
 | `BODY_PARSE` | Plain forward | 0–0.9 |
 | `MANUAL` | Typed into the form | 1.0 if a valid address |
@@ -58,7 +74,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Open <http://localhost:8080> and click **Load scenario emails**.
+Open <http://localhost:8080>. Connect Outlook to find real emails, or expand **Import an email manually** and choose **Load scenario emails** for sample data.
 
 For real intent detection put `AICORE_SERVICE_KEY` in `.env` — see [Local dev against real AI Core](#local-dev-against-real-ai-core).
 
@@ -88,6 +104,18 @@ npm run backend               # :3000
 npm run dev                   # :5173, proxies /api/v1
 ```
 
+For local Outlook sign-in through Vite, register and set `AZURE_REDIRECT_URI=http://localhost:5173/api/v1/auth/callback`. Keep `VITE_API_URL` unset so session cookies stay on the same origin. Load the environment variables into the backend process; the Docker setup reads `.env` through Compose.
+
+### Validation
+
+```bash
+npm run build
+npm test --prefix backend
+PLAYWRIGHT_PATH=/path/to/playwright CHROME_PATH=/path/to/chrome npm run smoke
+```
+
+The browser smoke test starts Vite on port 5174 and intercepts every API call. It checks Outlook setup/sign-in states, search, draft preparation, duplicate handling, partial failures, review navigation, and mobile layout without reading or sending real email. Set `SMOKE_BASE_URL` to use an existing Vite server instead.
+
 ## Deploy to BTP Cloud Foundry
 
 The J&J sandbox, same place `sales-intelligence` runs:
@@ -109,9 +137,9 @@ The SDK reads the binding out of `VCAP_SERVICES`, so no key goes in the manifest
 
 ## Enabling Outlook (Microsoft Graph)
 
-The Outlook sign-in, inbox picker and real sending appear **only** when the four
-`AZURE_*` vars are set (see `.env.example`). Without them, the app runs exactly
-as before — nothing Outlook-related is shown. Same code, two tenants:
+The Outlook search panel is always visible. Without the `AZURE_*` configuration
+(see `.env.example`), it shows **Outlook setup required**. Microsoft sign-in and
+live search become available once configured. Same code, two tenants:
 
 ### Option A — a dev tenant you own (try it this week, no waiting)
 
@@ -128,7 +156,7 @@ as before — nothing Outlook-related is shown. Same code, two tenants:
    AZURE_REDIRECT_URI=http://localhost:8080/api/v1/auth/callback
    COOKIE_SECRET=<long random string>
    ```
-4. `docker compose up --build` → open the app → **Sign in with Microsoft** → your inbox appears → **Process** an email → review → **Approve & send via Outlook**.
+4. `docker compose up --build` → open the app → **Connect Outlook** → **Find emails** → **Prepare draft** → review → **Approve & send via Outlook**.
 
 Demo with the tenant's synthetic mailboxes. Everything works end to end, including a real send that lands in Sent Items.
 
@@ -195,7 +223,7 @@ Graph webhook ─┘     (normalized)
 |---|---|
 | `ingestManual` | ✅ working |
 | `ingestEml` | ✅ working |
-| `ingestGraphMessage` | 🔲 shape in place, blocked on AAD app registration |
+| `ingestGraphMessage` | ✅ implemented; live use requires Entra app registration and sign-in |
 | Graph webhook | Phase 3 |
 
 `backend/email/ingest.js` is the seam. Landing Graph is one adapter, not a refactor — which is also what makes this reusable for the other use cases Pramod mentioned (*"many of our use cases will have that requirement"*).
@@ -215,7 +243,7 @@ Harmless in POC 1 (the field is displayed, nothing depends on it). Do not carry 
 | Gap | Why |
 |---|---|
 | **Sending without Outlook** | If **not** signed in to Outlook, Approve records the decision but doesn't send. Signed in, it sends for real via Graph `sendMail`. |
-| **Graph auto-polling** | The inbox is pulled on demand (pick from list). Background auto-ingest is Phase 2/3. |
+| **Graph auto-polling** | Outlook messages are found on demand using the search command. Unattended ingestion and Graph subscriptions are not implemented. |
 | **ERP data / documents** | POC 2 |
 | **Business rules** | Full project |
 | **App auth (XSUAA)** | The app itself has no gate — anyone with the URL can use the non-Outlook features. Outlook actions require Microsoft sign-in, but the app shell should still get XSUAA before real customer data. |
@@ -237,9 +265,10 @@ backend/
     parser.js          ★ forwarded-email → original sender
     ingest.js          ★ the adapter seam
 src/
-  App.tsx              shell, tiles, queue
+  App.tsx              Outlook-first shell, tiles, queue
   components/
-    IngestPanel.tsx    drop .eml / manual entry
+    MailboxPanel.tsx   Outlook connection, natural-language search, draft preparation
+    IngestPanel.tsx    secondary .eml import / manual entry
     QueueTable.tsx     work queue
     RequestDetail.tsx  three-pane review
 ```
