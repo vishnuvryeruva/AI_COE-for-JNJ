@@ -4,6 +4,8 @@ Ask for customer emails in Outlook → identify requests and order references �
 
 Outlook search is the primary workflow. Saved email uploads, manual entry, and sample emails remain under **Import an email manually**. No live ERP calls or SAP document retrieval are implemented.
 
+The [upgrade requirements](docs/upgrade-requirements.md) record the confirmed target: understand emails and attachments, retrieve SAP evidence, draft replies, and require manual approval before sending. Document retrieval and external email-service ownership remain open integration decisions.
+
 The point of POC 1 is to retire the risk he named: *"everybody challenged with this — email integration, SMTP not being supported... Everybody's failing there. So if we can crack that nut."*
 
 ## What works today
