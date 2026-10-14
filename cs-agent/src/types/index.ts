@@ -18,7 +18,7 @@ export interface RequestEmail {
 }
 
 export interface Extraction {
-  method: 'RFC822_ATTACHMENT' | 'BODY_PARSE' | 'MANUAL' | 'GRAPH_DIRECT' | null;
+  method: 'RFC822_ATTACHMENT' | 'MSG_ATTACHMENT' | 'MSG_DIRECT' | 'EML_DIRECT' | 'BODY_PARSE' | 'MANUAL' | 'GRAPH_DIRECT' | null;
   confidence: number | null;
   warnings: string[];
 }

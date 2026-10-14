@@ -1,89 +1,100 @@
-# Request to J&J IT — Azure AD App Registration for AI4U CS Agent
+# J&J IT request: Microsoft sign-in and Outlook access for AI4U CS Agent
 
-**Requested by:** Vishnu Yeruva (GTSUS, AI COE)
-**Sponsor:** Pramod Naik
-**Date:** 2026-07-17
-**Purpose:** Allow the AI4U Customer Service Agent (a BTP app) to let a signed-in CSR read their own Outlook inbox and send replies from it, via Microsoft Graph.
+**Prepared:** October 14, 2026
 
----
+**Requestor:** Vishnu Yeruva, AI COE
 
-## What this is
+**Business sponsor:** Pramod Naik
 
-A proof-of-concept app on SAP BTP that helps EDC customer service reps answer customer emails: it reads an email the CSR selects, drafts a reply with AI, and — after the CSR reviews and approves — sends the reply. It is already running and working; the only missing piece is permission to connect to Outlook.
+**Status:** Ready for IT review; registration/consent and live J&J validation are pending.
 
-We are **not** asking for tenant-wide mailbox access. This uses **delegated** permissions only: the app can act **solely as the individual CSR who has signed in**, on **their own mailbox**, and only while they are signed in. It cannot read anyone else's mail and has no standing/background access.
+## Request
 
----
+Please register **AI4U CS Agent** as a single-tenant web application in J&J’s Microsoft Entra tenant and approve delegated Microsoft Graph access for an assigned pilot group.
 
-## Exactly what we need registered
+Employees will select **Sign in with J&J account**, authenticate on Microsoft’s sign-in page using the organization’s existing credentials/MFA, and search their own Outlook Inbox from the application. They can import selected emails, prepare a draft, review it, and explicitly approve sending from their own mailbox. The application never collects J&J passwords.
+
+The code includes Outlook search and draft preparation, app-wide sign-in enforcement, private queues for each signed-in user, and `.msg`/`.eml` upload as an alternative. The updated version has not yet been deployed or validated against J&J’s tenant.
+
+## Registration settings
+
+| Setting | Requested value |
+|---|---|
+| Application name | `AI4U CS Agent` |
+| Supported accounts | Accounts in this organizational directory only |
+| Platform | Web — confidential backend client |
+| Authentication | Authorization code with PKCE, state and nonce validation |
+| Enterprise application assignment | Require assignment; assign the approved pilot users/security group |
+| Production callback | `https://cs-agent.cfapps.us10.hana.ondemand.com/api/v1/auth/callback` — confirm this against the actual approved deployment route before registering |
+| Optional local callback | `http://localhost:8080/api/v1/auth/callback` for Docker, or `http://localhost:5173/api/v1/auth/callback` for Vite development; register only those approved for testing |
+| Credential | Client secret held only in backend deployment secrets, with an owner and rotation/expiry date |
+| Tenant policies | Apply J&J’s normal Conditional Access, MFA and access policies |
+
+The current implementation uses a client secret. If policy requires certificate authentication or a different credential mechanism, please identify that requirement; additional implementation is needed before using it.
+
+## Permissions and consent
+
+Approve these **delegated Microsoft Graph permissions**:
+
+| Permission | Purpose |
+|---|---|
+| `User.Read` | Retrieve the signed-in employee’s basic profile/mailbox address |
+| `Mail.Read` | Read the signed-in employee’s Inbox messages and bodies for search and import |
+| `Mail.Send` | Send only when the employee explicitly selects **Approve & send via Outlook** |
+
+The sign-in flow also requests the OpenID Connect scopes `openid`, `profile` and `offline_access` for identity and token refresh. Please review and grant the required consent under J&J policy. We are not requesting application permissions, `Mail.ReadWrite`, shared-mailbox permissions or unattended mailbox ingestion.
+
+The implementation calls Microsoft Graph `/me` endpoints. Search reads up to 200 recent Inbox messages, on request. It does not search all folders or attachment contents. Graph permission scopes themselves are broader than the UI’s limited search; IT should assess the delegated permissions accordingly.
+
+## Information to return
+
+- Application (client) ID.
+- Directory (tenant) ID, as the explicit tenant GUID.
+- Confirmation of approved permissions/consent and pilot user/group assignment.
+- Exact registered callback URL.
+- Client secret delivered through an approved secret-management channel, plus expiry and rotation owner. Do not place secrets in this document, chat, email or source control.
+
+## Deployment configuration
+
+The app administrator will configure these backend settings through approved deployment secret/environment management:
 
 | Setting | Value |
 |---|---|
-| **Directory** | Azure AD (Microsoft Entra ID), J&J tenant |
-| **Application type** | Web app (confidential client — has a backend) |
-| **Sign-in audience** | Accounts in this organizational directory only (single tenant) |
-| **Redirect URI (production)** | `https://cs-agent.cfapps.us10.hana.ondemand.com/api/v1/auth/callback` |
-| **Redirect URI (dev/local, optional)** | `http://localhost:8080/api/v1/auth/callback` |
-| **Client secret** | One secret (or a certificate — we can provide a CSR if preferred) |
-| **Token type** | Standard OAuth2 authorization-code flow |
+| `AUTH_REQUIRED` | `true` |
+| `AZURE_CLIENT_ID` | IT-provided client ID |
+| `AZURE_TENANT_ID` | J&J tenant GUID; `common`/`organizations` are not accepted |
+| `AZURE_CLIENT_SECRET` | IT-provided secret |
+| `AZURE_REDIRECT_URI` | Exact registered Web callback URL |
+| `COOKIE_SECRET` | Independently generated random value of at least 32 characters; `openssl rand -hex 32` is suitable |
+| `AZURE_POST_LOGIN_URI` | `/` |
 
-### Microsoft Graph permissions — **Delegated** (not Application)
+Deploy the reviewed image in the correct J&J BTP organization/space and restart after configuration. The intended location recorded in the repository is org `jnj-cb-sbx-ai`, space `jnj-cb-sbx-so-poc`, region us10; verify the active Cloud Foundry target before making changes.
 
-| Permission | Why |
-|---|---|
-| `User.Read` | Identify the signed-in CSR (name, email) |
-| `Mail.Read` | Show the CSR their own inbox so they can pick an email to process |
-| `Mail.Send` | Send the approved reply as the CSR |
-| `offline_access` | Refresh the session so the CSR isn't re-prompted constantly |
+With `AUTH_REQUIRED=true`, missing sign-in configuration blocks application data access and shows a setup message. `AUTH_REQUIRED=false` is reserved for an isolated synthetic-data demo.
 
-**Admin consent** will be required (J&J blocks user self-consent) — please grant it for the four delegated scopes above.
+## Data handling and pilot boundaries
 
-### What we will receive back from IT
+- PostgreSQL stores imported email content, attachment metadata, draft replies and audit events. Search results are returned to the signed-in user; a request is persisted when a message is imported/prepared.
+- Each signed-in account has its own saved queue. The API applies ownership checks to reads, edits, audit access, approvals and deduplication. Legacy anonymous/demo records are retained separately.
+- The database stores account identifiers, usernames, browser sessions and the serialized MSAL token cache, including refresh tokens. Signing out deletes the current app session; it does not revoke Microsoft consent or delete the cached account tokens.
+- App sessions expire server-side after eight hours. OAuth transactions expire after ten minutes. Session cookies are signed and HttpOnly, and use Secure on HTTPS. Browser mutations are checked for the expected origin.
+- Email content used for classification/drafting goes to the configured SAP AI Core service. IT should confirm the configured model provider, processing region and approved data use; this request does not assert that model processing remains within a particular tenant or region.
+- The POC currently bundles PostgreSQL with the application. Before company-data use, agree on protected token/database storage, backup, retention/deletion, access logging and deployment persistence. The MSAL cache supports one backend process; multi-instance operation needs distributed coordination or partitioning.
+- Begin with synthetic messages in approved pilot mailboxes. Shared mailboxes, background synchronization and SAP document retrieval are separate integration work.
 
-- **Application (client) ID**
-- **Directory (tenant) ID**
-- **Client secret value** (or confirmation a provided certificate was uploaded)
+## Acceptance checks after IT setup
 
-We plug these into the app as environment variables. No mailbox credentials, no passwords, nothing that identifies a user is stored by the app.
+1. Open the app signed out: email data is unavailable until sign-in.
+2. Sign in as an assigned J&J pilot user and complete the tenant’s required verification. Confirm wrong-tenant and unassigned users cannot access the app.
+3. Find a known synthetic message in that user’s Inbox and prepare a draft. Confirm search/import does not send mail.
+4. Sign in as a second pilot user in a separate browser. Confirm each sees only their own queue and cannot open the other’s request URL.
+5. Upload a synthetic Outlook `.msg` and an `.eml`; confirm sender, subject, body and review workflow. Invalid files should return a readable error.
+6. After separate explicit test-send approval, send one reviewed reply to an approved test recipient and check Sent Items. Expired/revoked Outlook access must prompt reconnection without marking the reply sent.
+7. Sign out and confirm the application clears visible email data and invalidates the session.
 
----
+## Microsoft references
 
-## Why delegated (and why this is low-risk)
-
-- The app never has its own mailbox rights. Every read/send happens **on behalf of the signed-in CSR**, scoped to that one person's mailbox, and stops the moment they sign out.
-- This is the same permission model as any "Sign in with Microsoft, then show me my mail" application.
-- Contrast with **Application** permissions (e.g. `Mail.Read` as an application), which would grant tenant-wide mailbox access — **we are explicitly not requesting that.**
-- The CSR stays in control: nothing sends without them clicking **Approve**.
-
----
-
-## Data handling (for the security review)
-
-- The app stores incoming email content and the AI-generated draft in its own database (SAP HANA/PostgreSQL on BTP) to show the work queue and an audit trail.
-- AI processing uses **SAP AI Core** (already provisioned in the J&J BTP sandbox, `so-poc-aicore`) — email content is sent there for classification and drafting. No third-party AI outside the J&J BTP tenant is used.
-- This is a POC on non-production data initially. We're happy to complete whatever DPIA / security intake is standard.
-
----
-
-## Contacts
-
-- **Requestor:** Vishnu Yeruva — <vishnuvardhan.reddy98@yahoo.com> (update to J&J address)
-- **Sponsor:** Pramod Naik
-- **App URL:** https://cs-agent.cfapps.us10.hana.ondemand.com
-- **BTP location:** org `jnj-cb-sbx-ai`, space `jnj-cb-sbx-so-poc` (us10)
-
----
-
-## Appendix — how to register it (if IT wants the click-path)
-
-1. **Entra admin center → App registrations → New registration**
-   - Name: `AI4U CS Agent`
-   - Supported account types: *Accounts in this organizational directory only*
-   - Redirect URI: *Web* → `https://cs-agent.cfapps.us10.hana.ondemand.com/api/v1/auth/callback`
-2. **Certificates & secrets → New client secret** (note the value; it's shown once)
-3. **API permissions → Add a permission → Microsoft Graph → Delegated permissions**
-   - Add `User.Read`, `Mail.Read`, `Mail.Send`, `offline_access`
-   - **Grant admin consent**
-4. Send us: Application (client) ID, Directory (tenant) ID, client secret value.
-
-> If you'd rather scope even tighter, we can also work against a single dedicated shared mailbox with an `ApplicationAccessPolicy` — happy to discuss which model J&J prefers. The delegated model above needs no dedicated mailbox and is the smallest ask.
+- [Authorization code flow and PKCE](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow)
+- [Single-tenant application audience](https://learn.microsoft.com/en-us/entra/identity-platform/single-and-multi-tenant-apps)
+- [Delegated Microsoft Graph access](https://learn.microsoft.com/en-us/graph/auth-v2-user)
+- [Microsoft Graph permissions reference](https://learn.microsoft.com/en-us/graph/permissions-reference)
