@@ -6,15 +6,19 @@ module.exports = {
 
   isProd: process.env.NODE_ENV === 'production',
   cookieSecret: process.env.COOKIE_SECRET || 'dev-cookie-secret-change-me',
+  // Fail closed in deployed environments. Explicitly opt out only for a demo
+  // containing no company/customer data.
+  authRequired: process.env.AUTH_REQUIRED === undefined
+    ? process.env.NODE_ENV === 'production'
+    : process.env.AUTH_REQUIRED !== 'false',
 
-  // Microsoft Graph (delegated). When these are unset the app runs exactly as
-  // before — the Outlook workspace shows setup guidance. The same code points at
-  // a dev tenant or at J&J; only tenantId/clientId/secret/redirectUri change.
+  // Microsoft Graph (delegated). Required-auth deployments remain locked until
+  // these are configured. A dev tenant uses the same flow with its own app IDs.
   azure: {
     clientId: process.env.AZURE_CLIENT_ID || '',
     clientSecret: process.env.AZURE_CLIENT_SECRET || '',
-    // 'common' works for a multi-tenant dev app; J&J will supply a specific tenant id.
-    tenantId: process.env.AZURE_TENANT_ID || 'common',
+    // Use J&J's Directory (tenant) ID, never common/organizations/consumers.
+    tenantId: process.env.AZURE_TENANT_ID || '',
     // Must EXACTLY match the redirect URI registered in Azure AD.
     redirectUri: process.env.AZURE_REDIRECT_URI || 'http://localhost:8080/api/v1/auth/callback',
     // Where the browser lands after login completes.

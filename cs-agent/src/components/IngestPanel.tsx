@@ -12,31 +12,54 @@ export default function IngestPanel({ onIngested, onError }: Props) {
   const [from, setFrom] = useState('');
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
+  const [notice, setNotice] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const processing = useRef(false);
 
   async function run(fn: () => Promise<unknown>) {
+    if (processing.current) return;
+    processing.current = true;
     setBusy(true);
+    setNotice(null);
     try {
       await fn();
       onIngested();
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
+      processing.current = false;
       setBusy(false);
     }
   }
 
-  async function uploadFiles(files: FileList | null) {
-    if (busy || !files?.length) return;
-    if (Array.from(files).some((file) => !file.name.toLowerCase().endsWith('.eml'))) {
-      onError('Choose a saved .eml email. Outlook .msg files are not supported.');
+  async function uploadFiles(files: File[]) {
+    if (processing.current || !files.length) return;
+    setNotice(null);
+    if (files.some((file) => !/\.(eml|msg)$/i.test(file.name))) {
+      onError('Choose a saved Outlook .msg or .eml email. Other file types are not supported.');
       return;
     }
-    await run(async () => {
-      for (const file of Array.from(files)) {
-        await api.uploadEml(file);
+    if (files.some((file) => file.size > 32 * 1024 * 1024)) {
+      onError('Each email must be 32 MB or smaller. Choose a smaller .msg or .eml file.');
+      return;
+    }
+    processing.current = true;
+    setBusy(true);
+    let imported = 0;
+    try {
+      for (const file of files) {
+        await api.uploadEmail(file);
+        imported += 1;
       }
-    });
+      setNotice(`${imported} ${imported === 1 ? 'email imported' : 'emails imported'}. Review your work queue.`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      onError(`${imported ? `${imported} ${imported === 1 ? 'email was' : 'emails were'} imported before this error. ` : ''}${message}`);
+    } finally {
+      if (imported) onIngested();
+      processing.current = false;
+      setBusy(false);
+    }
   }
 
   return (
@@ -58,27 +81,34 @@ export default function IngestPanel({ onIngested, onError }: Props) {
           onDrop={(e) => {
             e.preventDefault();
             setDragOver(false);
-            void uploadFiles(e.dataTransfer.files);
+            void uploadFiles(Array.from(e.dataTransfer.files));
           }}
           onClick={() => fileInput.current?.click()}
           onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.current?.click(); } }}
           role="button"
+          aria-disabled={busy}
+          aria-label="Upload Outlook .msg or .eml emails"
           tabIndex={0}
         >
           <input
             ref={fileInput}
             type="file"
-            accept=".eml,message/rfc822"
+            accept=".eml,.msg,message/rfc822,application/vnd.ms-outlook"
+            disabled={busy}
             multiple
             hidden
-            onChange={(e) => void uploadFiles(e.target.files)}
+            onChange={(e) => {
+              const files = Array.from(e.currentTarget.files || []);
+              e.currentTarget.value = '';
+              void uploadFiles(files);
+            }}
           />
-          <strong>Drop a forwarded .eml here</strong>
+          <strong>{busy ? 'Processing email…' : 'Drop an Outlook .msg or .eml email here'}</strong>
           <div style={{ fontSize: 12, marginTop: 4 }}>
-            In Outlook use <b>Forward as Attachment</b> (Ctrl+Alt+F), then save the message as .eml.
-            A plain forward also works, but the sender is recovered by parsing and gets flagged for review.
+            Save an email from Outlook as .msg or .eml, then drop the saved file here or click to choose it. Up to 32 MB per email.
           </div>
         </div>
+        {notice && <p role="status">{notice}</p>}
 
         <details style={{ marginTop: 16 }}>
           <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--muted)' }}>

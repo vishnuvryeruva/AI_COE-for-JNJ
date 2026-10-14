@@ -9,7 +9,8 @@ CREATE TABLE IF NOT EXISTS requests (
   status               TEXT NOT NULL,
   status_reason        TEXT,
   source               TEXT NOT NULL,
-  source_message_id    TEXT UNIQUE,
+  source_message_id    TEXT,
+  owner_account_id     TEXT,
   received_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
   forwarded_by         TEXT,
@@ -47,6 +48,12 @@ CREATE TABLE IF NOT EXISTS requests (
   updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Preserve existing demo rows, but keep them out of signed-in users' queues.
+ALTER TABLE requests ADD COLUMN IF NOT EXISTS owner_account_id TEXT;
+ALTER TABLE requests DROP CONSTRAINT IF EXISTS requests_source_message_id_key;
+CREATE UNIQUE INDEX IF NOT EXISTS requests_owner_message_idx
+  ON requests (COALESCE(owner_account_id, ''), source_message_id);
+CREATE INDEX IF NOT EXISTS requests_owner_idx ON requests (owner_account_id);
 CREATE INDEX IF NOT EXISTS requests_status_idx ON requests (status);
 CREATE INDEX IF NOT EXISTS requests_received_idx ON requests (received_at DESC);
 
@@ -129,7 +136,7 @@ function rowToRequest(row) {
   };
 }
 
-async function insertRequest(id, email, result, source, sourceMessageId) {
+async function insertRequest(id, email, result, source, sourceMessageId, ownerAccountId = null) {
   const { rows } = await pool.query(
     `INSERT INTO requests (
        id, status, status_reason, source, source_message_id,
@@ -139,7 +146,7 @@ async function insertRequest(id, email, result, source, sourceMessageId) {
        extraction_method, extraction_confidence, extraction_warnings,
        intent, intent_label, analysis_confidence, reasoning,
        order_number, delivery_number, language, requester_type,
-       draft_to, draft_cc, draft_subject, draft_body
+       draft_to, draft_cc, draft_subject, draft_body, owner_account_id
      ) VALUES (
        $1,$2,$3,$4,$5,
        $6,$7,$8,
@@ -148,7 +155,7 @@ async function insertRequest(id, email, result, source, sourceMessageId) {
        $17,$18,$19,
        $20,$21,$22,$23,
        $24,$25,$26,$27,
-       $28,$29,$30,$31
+       $28,$29,$30,$31,$32
      ) RETURNING *`,
     [
       id, result.status, result.statusReason, source, sourceMessageId,
@@ -160,15 +167,15 @@ async function insertRequest(id, email, result, source, sourceMessageId) {
       result.analysis.intent, result.analysis.intentLabel, result.analysis.confidence,
       result.analysis.reasoning, result.analysis.orderNumber, result.analysis.deliveryNumber,
       result.analysis.language, result.analysis.requesterType,
-      result.draft.to, result.draft.cc, result.draft.subject, result.draft.body,
+      result.draft.to, result.draft.cc, result.draft.subject, result.draft.body, ownerAccountId,
     ]
   );
   return rowToRequest(rows[0]);
 }
 
-async function listRequests({ status, intent, limit = 100 } = {}) {
-  const clauses = [];
-  const params = [];
+async function listRequests({ status, intent, limit = 100 } = {}, ownerAccountId = null) {
+  const clauses = ['owner_account_id IS NOT DISTINCT FROM $1::text'];
+  const params = [ownerAccountId];
   if (status) { params.push(status); clauses.push(`status = $${params.length}`); }
   if (intent) { params.push(intent); clauses.push(`intent = $${params.length}`); }
   params.push(limit);
@@ -183,12 +190,12 @@ async function listRequests({ status, intent, limit = 100 } = {}) {
   return rows.map(rowToRequest);
 }
 
-async function getRequest(id) {
-  const { rows } = await pool.query('SELECT * FROM requests WHERE id = $1', [id]);
+async function getRequest(id, ownerAccountId = null) {
+  const { rows } = await pool.query('SELECT * FROM requests WHERE id = $1 AND owner_account_id IS NOT DISTINCT FROM $2::text', [id, ownerAccountId]);
   return rowToRequest(rows[0]);
 }
 
-async function updateDraft(id, { subject, body, to, cc }) {
+async function updateDraft(id, { subject, body, to, cc }, ownerAccountId = null) {
   const { rows } = await pool.query(
     `UPDATE requests
      SET draft_subject = COALESCE($2, draft_subject),
@@ -196,23 +203,23 @@ async function updateDraft(id, { subject, body, to, cc }) {
          draft_to      = COALESCE($4, draft_to),
          draft_cc      = COALESCE($5, draft_cc),
          updated_at    = NOW()
-     WHERE id = $1 RETURNING *`,
-    [id, subject, body, to, cc]
+     WHERE id = $1 AND owner_account_id IS NOT DISTINCT FROM $6::text RETURNING *`,
+    [id, subject, body, to, cc, ownerAccountId]
   );
   return rowToRequest(rows[0]);
 }
 
-async function setStatus(id, status, reason) {
+async function setStatus(id, status, reason, ownerAccountId = null) {
   const { rows } = await pool.query(
     `UPDATE requests SET status = $2, status_reason = $3, updated_at = NOW()
-     WHERE id = $1 RETURNING *`,
-    [id, status, reason || null]
+     WHERE id = $1 AND owner_account_id IS NOT DISTINCT FROM $4::text RETURNING *`,
+    [id, status, reason || null, ownerAccountId]
   );
   return rowToRequest(rows[0]);
 }
 
-async function stats() {
-  const { rows } = await pool.query('SELECT status, COUNT(*)::int AS count FROM requests GROUP BY status');
+async function stats(ownerAccountId = null) {
+  const { rows } = await pool.query('SELECT status, COUNT(*)::int AS count FROM requests WHERE owner_account_id IS NOT DISTINCT FROM $1::text GROUP BY status', [ownerAccountId]);
   const counts = { READY: 0, NEEDS_REVIEW: 0, FAILED: 0, SENT: 0, REJECTED: 0 };
   for (const row of rows) counts[row.status] = row.count;
   counts.TOTAL = Object.values(counts).reduce((a, b) => a + b, 0);
@@ -226,17 +233,20 @@ async function addAudit(requestId, actor, action, details) {
   );
 }
 
-async function getAudit(requestId) {
+async function getAudit(requestId, ownerAccountId = null) {
   const { rows } = await pool.query(
-    'SELECT ts, actor, action, details FROM audit_events WHERE request_id = $1 ORDER BY ts',
-    [requestId]
+    `SELECT ts, actor, action, details FROM audit_events
+     WHERE request_id = $1 AND EXISTS (
+       SELECT 1 FROM requests WHERE id = $1 AND owner_account_id IS NOT DISTINCT FROM $2::text
+     ) ORDER BY ts`,
+    [requestId, ownerAccountId]
   );
   return rows;
 }
 
-async function findBySourceMessageId(sourceMessageId) {
+async function findBySourceMessageId(sourceMessageId, ownerAccountId = null) {
   if (!sourceMessageId) return null;
-  const { rows } = await pool.query('SELECT * FROM requests WHERE source_message_id = $1', [sourceMessageId]);
+  const { rows } = await pool.query('SELECT * FROM requests WHERE source_message_id = $1 AND owner_account_id IS NOT DISTINCT FROM $2::text', [sourceMessageId, ownerAccountId]);
   return rowToRequest(rows[0]);
 }
 
@@ -265,7 +275,7 @@ async function createSession(sid, homeAccountId, username) {
 
 async function getSession(sid) {
   if (!sid) return null;
-  const { rows } = await pool.query('SELECT sid, home_account_id, username FROM web_sessions WHERE sid = $1', [sid]);
+  const { rows } = await pool.query("SELECT sid, home_account_id, username FROM web_sessions WHERE sid = $1 AND created_at > NOW() - INTERVAL '8 hours'", [sid]);
   return rows[0] || null;
 }
 

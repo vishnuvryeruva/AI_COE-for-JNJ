@@ -1,12 +1,24 @@
+# Cloud Foundry terminates TLS before nginx; preserve its HTTPS indication.
+map $http_x_forwarded_proto $client_scheme {
+    default $scheme;
+    https https;
+}
+map $uri $log_request {
+    default 1;
+    /api/v1/auth/callback 0;
+}
+
 server {
     listen ${PORT};
     server_name _;
+    # OAuth callbacks carry temporary credentials in the query string.
+    access_log /var/log/nginx/access.log combined if=$log_request;
 
     root /app/dist;
     index index.html;
 
-    # Forwarded .eml files can be large once attachments are included
-    client_max_body_size 32m;
+    # Allow multipart overhead; Express enforces the 32 MB email-file limit.
+    client_max_body_size 33m;
 
     gzip on;
     gzip_types text/plain text/css application/json application/javascript text/javascript;
@@ -17,7 +29,7 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto $client_scheme;
         # AI Core round-trips take a while; don't cut them off
         proxy_read_timeout 120s;
         proxy_send_timeout 120s;

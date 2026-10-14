@@ -85,11 +85,11 @@ async function startServer() {
   }
 }
 
-async function scenario(browser, auth, run) {
+async function scenario(browser, auth, run, options = {}) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
-  const state = { auth: { ...auth }, requests: [], apiCalls: [], unexpected: [], errors: [], ingested: [], prompts: [], failThird: true, releaseSearch: null };
+  const state = { auth: { required: true, ...auth }, requests: options.requests || [], apiCalls: [], unexpected: [], errors: [], ingested: [], prompts: [], uploads: [], failThird: true, failUpload: null, authFailure: false, releaseSearch: null, releaseAuth: null };
   page.on('pageerror', (error) => state.errors.push(error.message));
   await context.route('**/*', async (route) => {
     const req = route.request();
@@ -104,13 +104,26 @@ async function scenario(browser, auth, run) {
     state.apiCalls.push(call);
     const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
     if (call === 'GET /health') return json({ status: 'ok', aiCore: 'configured' });
-    if (call === 'GET /auth/status') return json(state.auth);
+    if (call === 'GET /auth/status') {
+      if (options.delayAuth) await new Promise((resolve) => { state.releaseAuth = resolve; });
+      if (state.authFailure) return json({ error: 'Unavailable' }, 503);
+      return json(state.auth);
+    }
     if (call === 'POST /auth/logout') {
       state.auth.signedIn = false; state.auth.username = null;
       return json({ ok: true });
     }
     if (call === 'GET /requests') return json(state.requests.filter((item) => !url.searchParams.has('status') || item.status === url.searchParams.get('status')));
     if (call === 'GET /stats') return json({ READY: state.requests.length, NEEDS_REVIEW: 0, FAILED: 0, SENT: 0, REJECTED: 0, TOTAL: state.requests.length });
+    if (call === 'POST /requests/upload' && options.allowUploads) {
+      const name = req.postDataBuffer().toString('utf8').match(/filename="([^"]+)"/)?.[1];
+      state.uploads.push(name);
+      if (state.failUpload === 'gateway') return route.fulfill({ status: 502, contentType: 'text/html', body: '<html><body>Bad Gateway</body></html>' });
+      if (state.failUpload === 'network') return route.abort('failed');
+      const imported = { ...requestFixture(messageFixtures[0]), id: `upload-${state.uploads.length}`, source: 'UPLOAD' };
+      state.requests.push(imported);
+      return json({ request: imported, deduped: false });
+    }
     if (call === 'POST /mailbox/search') {
       const body = req.postDataJSON();
       assert.equal(typeof body.prompt, 'string');
@@ -149,17 +162,19 @@ async function scenario(browser, auth, run) {
     return json({ error: `Unexpected API call blocked by browser smoke: ${call}` }, 500);
   });
   try {
-    await page.goto(baseURL);
+    await page.goto(`${baseURL}${options.query || ''}`);
     await run(page, state);
     assert.deepEqual(state.unexpected, [], 'Only expected local resources and intercepted APIs were requested');
     assert.deepEqual(state.errors, [], 'No browser runtime errors');
-    assert.ok(!state.apiCalls.some((call) => /approve|send|regenerate|manual|upload/.test(call)), 'Searching and preparing never sends email or creates manual uploads');
+    assert.ok(!state.apiCalls.some((call) => /approve|send|regenerate|manual/.test(call)), 'These checks never send email or modify drafts');
+    if (!options.allowUploads) assert.equal(state.uploads.length, 0);
   } catch (error) {
     await page.screenshot({ path: path.join(screenshotDirectory, 'cs-agent-ui-failure.png'), fullPage: true }).catch(() => {});
     if (state.errors.length || state.unexpected.length) console.error({ pageErrors: state.errors, blockedRequests: state.unexpected });
     throw error;
   } finally {
     if (state.releaseSearch) state.releaseSearch();
+    if (state.releaseAuth) state.releaseAuth();
     await context.close();
   }
 }
@@ -173,7 +188,7 @@ async function main() {
       ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}),
     });
 
-    await scenario(browser, { configured: false, signedIn: false, username: null }, async (page, state) => {
+    await scenario(browser, { required: false, configured: false, signedIn: false, username: null }, async (page, state) => {
       await expectVisible(page.getByText('Outlook setup required', { exact: true }));
       assert.equal(await page.getByRole('link', { name: 'Connect Outlook', exact: true }).count(), 0);
       assert.equal(state.prompts.length, 0);
@@ -182,13 +197,50 @@ async function main() {
     });
     console.log('PASS: Outlook setup is visible when unconfigured.');
 
-    await scenario(browser, { configured: true, signedIn: false, username: null }, async (page) => {
-      const connect = page.getByRole('link', { name: 'Connect Outlook', exact: true });
+    await scenario(browser, { configured: true, signedIn: false, username: null }, async (page, state) => {
+      const connect = page.getByRole('link', { name: 'Sign in with J&J account', exact: true });
       await expectVisible(connect);
       assert.equal(await connect.getAttribute('href'), '/api/v1/auth/login');
+      assert.ok(!state.apiCalls.some((call) => /requests|stats|mailbox/.test(call)), 'Signed-out users never request work queue or mailbox data');
+      assert.equal(await page.getByText('Your work queue', { exact: true }).count(), 0);
+      assert.equal(await page.locator('input[type="file"]').count(), 0);
       await checkNoOverflow(page, 'Signed-out desktop');
+      await page.setViewportSize({ width: 390, height: 844 });
+      await checkNoOverflow(page, 'Signed-out mobile');
     });
-    console.log('PASS: Configured Outlook exposes the Microsoft sign-in link.');
+    console.log('PASS: J&J Microsoft sign-in gates workspace data and uploads.');
+
+    await scenario(browser, { configured: false, signedIn: false, username: null }, async (page, state) => {
+      await expectVisible(page.getByRole('heading', { name: 'J&J sign-in setup required', exact: true }));
+      assert.equal(await page.getByRole('link', { name: 'Sign in with J&J account', exact: true }).count(), 0);
+      assert.ok(!state.apiCalls.some((call) => /requests|stats|mailbox/.test(call)), 'Missing required tenant setup fails closed');
+    });
+    console.log('PASS: Required but missing J&J configuration keeps workspace locked.');
+
+    await scenario(browser, { configured: true, signedIn: true, username: 'csr@example.com' }, async (page, state) => {
+      await expectText(page.getByRole('status'), 'Checking your sign-in');
+      assert.ok(!state.apiCalls.some((call) => /requests|stats|mailbox/.test(call)), 'Pending sign-in verification never requests workspace data');
+      for (let attempt = 0; !state.releaseAuth && attempt < 100; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+      state.authFailure = true;
+      state.releaseAuth();
+      state.releaseAuth = null;
+      await expectVisible(page.getByRole('heading', { name: 'Sign-in check unavailable', exact: true }));
+      assert.ok(!state.apiCalls.some((call) => /requests|stats|mailbox/.test(call)), 'Failed sign-in verification never requests workspace data');
+    }, { delayAuth: true });
+    console.log('PASS: Pending and unavailable sign-in checks fail closed.');
+
+    await scenario(browser, { configured: true, signedIn: false, username: null }, async (page) => {
+      await expectText(page.getByRole('alert'), /administrator needs to approve/);
+      assert.equal(new URL(page.url()).searchParams.has('authError'), false, 'Callback status is removed from the URL');
+    }, { query: '/?authError=AUTH_CONSENT_REQUIRED' });
+    await scenario(browser, { configured: true, signedIn: false, username: null }, async (page) => {
+      await expectText(page.getByRole('alert'), 'Microsoft sign-in could not be completed. Please try again.');
+      assert.equal((await page.locator('body').innerText()).includes('secret-token'), false, 'Unknown callback error text is never echoed');
+    }, { query: '/?authError=secret-token' });
+    await scenario(browser, { configured: true, signedIn: false, username: null }, async (page) => {
+      await expectText(page.getByRole('alert'), 'Microsoft sign-in could not be completed. Please try again.');
+    }, { query: '/?authError=__proto__' });
+    console.log('PASS: Callback errors show safe actionable copy, without reflecting provider details.');
 
     await scenario(browser, { configured: true, signedIn: true, username: 'csr@example.com' }, async (page, state) => {
       const prompt = page.getByRole('textbox', { name: 'Describe the emails to find' });
@@ -237,7 +289,10 @@ async function main() {
       await checkNoOverflow(page, 'Review mobile');
       await page.getByRole('button', { name: /Back to queue/ }).click();
       await page.getByRole('button', { name: 'Sign out', exact: true }).click();
-      await expectVisible(page.getByRole('link', { name: 'Connect Outlook', exact: true }));
+      await expectVisible(page.getByRole('link', { name: 'Sign in with J&J account', exact: true }));
+      assert.equal(await page.getByRole('article').count(), 0, 'Logout removes mailbox results');
+      assert.equal(await page.getByText('Your work queue', { exact: true }).count(), 0, 'Logout removes work queue data');
+      assert.equal((await page.locator('body').innerText()).includes(messageFixtures[0].subject), false, 'Logout removes customer email content');
     });
     console.log('PASS: Natural-language search, empty/matching results, individual/bulk preparation, deduplication, partial failure and retry, draft review, sign-out, and mobile layout.');
 
@@ -267,12 +322,61 @@ async function main() {
       assert.equal(await search.isDisabled(), true, 'An empty command cannot search the inbox');
       await prompt.fill('Find sales orders with an expired session');
       await search.click();
-      await expectVisible(page.getByRole('heading', { name: 'Reconnect your Outlook mailbox', exact: true }));
-      await expectVisible(page.getByRole('link', { name: 'Connect Outlook', exact: true }));
+      await expectVisible(page.getByRole('heading', { name: 'Sign in to your workspace', exact: true }));
+      await expectVisible(page.getByRole('link', { name: 'Sign in with J&J account', exact: true }));
       await expectText(page.getByRole('alert'), /session has expired/);
-      assert.equal(await search.isDisabled(), true, 'An expired token cannot keep searching even if auth status is stale');
-    });
+      assert.equal(await search.count(), 0, 'An expired token cannot keep searching even if auth status is stale');
+      assert.equal(await page.getByText('Your work queue', { exact: true }).count(), 0, 'Session expiry removes the work queue');
+      assert.equal((await page.locator('body').innerText()).includes(messageFixtures[0].subject), false, 'Session expiry removes customer email content');
+      assert.equal(state.auth.signedIn, true, 'Stale signed-in status cannot reopen a session after a 401');
+    }, { requests: [requestFixture(messageFixtures[0])] });
     console.log('PASS: Deferred-search busy controls, prompt-change invalidation, blank command validation, and expired-session reconnection.');
+
+    await scenario(browser, { configured: true, signedIn: true, username: 'csr@example.com' }, async (page, state) => {
+      await page.getByText('Import an email manually', { exact: true }).click();
+      const input = page.locator('input[type="file"]');
+      assert.match(await input.getAttribute('accept'), /\.msg/);
+      assert.match(await input.getAttribute('accept'), /\.eml/);
+      await input.setInputFiles({ name: 'unsupported.pdf', mimeType: 'application/pdf', buffer: Buffer.from('not an email') });
+      await expectText(page.getByRole('alert'), 'Choose a saved Outlook .msg or .eml email');
+      assert.equal(state.uploads.length, 0, 'Unsupported extensions never reach the server');
+      await page.getByRole('button', { name: 'dismiss', exact: true }).click();
+
+      state.failUpload = 'gateway';
+      const savedMsg = { name: 'customer.MSG', mimeType: 'application/vnd.ms-outlook', buffer: Buffer.from('smoke fixture: upload transport only') };
+      await input.setInputFiles(savedMsg);
+      await expectText(page.getByRole('alert'), /email service is unavailable \(HTTP 502\)/);
+      assert.deepEqual(state.uploads, ['customer.MSG'], 'Outlook .msg files are accepted, including uppercase extension');
+      assert.equal((await page.locator('body').innerText()).includes('<html>'), false, 'Gateway HTML is not rendered as an error');
+      await page.getByRole('button', { name: 'dismiss', exact: true }).click();
+
+      state.failUpload = 'network';
+      await input.setInputFiles(savedMsg);
+      await expectText(page.getByRole('alert'), 'Could not reach the email service. Check your connection and try again.');
+      await page.getByRole('button', { name: 'dismiss', exact: true }).click();
+      state.failUpload = null;
+      await input.setInputFiles(savedMsg);
+      await expectText(page.getByRole('status'), '1 email imported');
+      assert.deepEqual(state.uploads, ['customer.MSG', 'customer.MSG', 'customer.MSG'], 'The same selected file can be retried after an upload failure');
+      await input.setInputFiles({ name: 'customer.eml', mimeType: 'message/rfc822', buffer: Buffer.from('Subject: Test\r\n\r\nTest email') });
+      for (let attempt = 0; state.uploads.length < 4 && attempt < 100; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.equal(state.uploads.at(-1), 'customer.eml', 'Existing .eml import remains available');
+    }, { allowUploads: true });
+    console.log('PASS: .msg/.eml upload, extension validation, helpful HTTP 502 and network errors, and same-file retry.');
+
+    await scenario(browser, { required: false, configured: true, signedIn: true, username: 'csr@example.com' }, async (page) => {
+      await page.getByText('Import an email manually', { exact: true }).click();
+      await page.getByText('Or enter an email manually', { exact: true }).click();
+      await page.getByRole('textbox', { name: 'From', exact: true }).fill('private-customer@example.com');
+      await page.getByRole('textbox', { name: 'Body', exact: true }).fill('Customer email content entered before logout.');
+      await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+      await expectVisible(page.getByRole('link', { name: 'Connect Outlook', exact: true }));
+      await page.getByText('Import an email manually', { exact: true }).click();
+      await page.getByText('Or enter an email manually', { exact: true }).click();
+      assert.equal(await page.getByRole('textbox', { name: 'From', exact: true }).inputValue(), '');
+      assert.equal(await page.getByRole('textbox', { name: 'Body', exact: true }).inputValue(), '', 'Logout clears local customer email input even in optional-auth development mode');
+    });
+    console.log('PASS: Optional-auth development logout also clears unsaved customer email inputs.');
     console.log('PASS: No live Outlook/SAP calls or email-send actions; all APIs were intercepted.');
     console.log(`Screenshots: ${path.join(screenshotDirectory, 'cs-agent-ui-desktop.png')}, ${path.join(screenshotDirectory, 'cs-agent-ui-mobile.png')}`);
   } finally {

@@ -80,6 +80,11 @@ button:focus-visible, a:focus-visible, summary:focus-visible, [role='button']:fo
 .fallback-hint { color: var(--muted); font-weight: 400; margin-left: 16px; font-size: 12px; }
 .manual-fallback .panel { border: 0; border-top: 1px solid var(--border); border-radius: 0; box-shadow: none; margin-bottom: 0; }
 .workspace-footnote { font-size: 11px; color: var(--muted); text-align: center; margin: 20px 0 0; }
+.sign-in-panel { max-width: 620px; margin: 64px auto; padding: 36px; }
+.sign-in-panel h1 { font-size: 28px; line-height: 1.2; margin: 12px 0; letter-spacing: -0.6px; }
+.sign-in-panel p { color: var(--muted); }
+.sign-in-panel .btn { margin-top: 10px; }
+.sign-in-panel .sign-in-help { margin-top: 24px; font-size: 12px; }
 
 /* --- Tiles --- */
 
@@ -284,6 +289,7 @@ tr.clickable:hover { background: #f7f9fb; cursor: pointer; }
   .topbar .badge { font-size: 10px; }
   .account-badge { width: 100%; }
   .container { padding: 24px 16px; }
+  .sign-in-panel { padding: 24px; margin: 24px auto; }
   .workspace-heading { margin-bottom: 20px; }
   .workspace-description { font-size: 13px; }
   .section-heading { align-items: start; flex-direction: column; gap: 6px; }

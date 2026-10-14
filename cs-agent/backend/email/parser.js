@@ -1,4 +1,4 @@
-const { simpleParser } = require('mailparser');
+const { readEmail, emailFileError, MAX_EMAIL_BYTES } = require('./formats');
 
 /**
  * Recovering the original sender from a forwarded email.
@@ -147,7 +147,7 @@ function inferMailingGroup(recipients, agentMailbox) {
 function extractRfc822Attachment(attachments = []) {
   return attachments.find(
     (a) =>
-      a.contentType === 'message/rfc822' ||
+      a.embeddedMessage || a.contentType === 'message/rfc822' ||
       /\.(eml|msg)$/i.test(a.filename || '') ||
       a.contentType === 'application/vnd.ms-outlook'
   );
@@ -164,20 +164,20 @@ function describeAttachments(attachments = []) {
 }
 
 /**
- * @param {Buffer|string} raw - the forwarded email (.eml / rfc822)
+ * @param {Buffer|string} raw - the forwarded email (.eml / .msg)
  * @param {object} [options]
  * @param {string} [options.agentMailbox] - excluded when inferring the mailing group
  */
-async function parseForwardedEmail(raw, { agentMailbox = '' } = {}) {
-  const outer = await simpleParser(raw);
+async function parseForwardedEmail(raw, { agentMailbox = '', filename = '', allowDirect = false } = {}) {
+  const outer = await readEmail(raw, { filename });
 
   const forwarder = normalizeParsedAddress(outer.from);
   const outerRecipients = [...addressListFrom(outer.to), ...addressListFrom(outer.cc)];
 
   // --- Preferred path: forwarded as attachment ---
   const rfc822 = extractRfc822Attachment(outer.attachments);
-  if (rfc822 && rfc822.content) {
-    const inner = await simpleParser(rfc822.content);
+  if (rfc822 && (rfc822.content || rfc822.embeddedMessage)) {
+    const inner = rfc822.embeddedMessage || await readEmail(rfc822.content, { filename: rfc822.filename || '' });
     const sender = normalizeParsedAddress(inner.from);
     const innerRecipients = [...addressListFrom(inner.to), ...addressListFrom(inner.cc)];
 
@@ -196,8 +196,8 @@ async function parseForwardedEmail(raw, { agentMailbox = '' } = {}) {
         attachments: describeAttachments(inner.attachments),
       },
       extraction: {
-        method: 'RFC822_ATTACHMENT',
-        confidence: 1.0,
+        method: inner.format === 'MSG' ? 'MSG_ATTACHMENT' : 'RFC822_ATTACHMENT',
+        confidence: sender.address ? 1.0 : 0,
         warnings: sender.address ? [] : ['Original sender had no resolvable email address'],
       },
     };
@@ -205,10 +205,37 @@ async function parseForwardedEmail(raw, { agentMailbox = '' } = {}) {
 
   // --- Fallback path: parse the forwarded block out of the body ---
   const bodyText = (outer.text || htmlToText(outer.html) || '').replace(/\r/g, '');
-  const boundary = findForwardBoundary(bodyText);
+  // Ordinary replies can quote older From:/To: blocks. Their current From
+  // remains authoritative unless the subject identifies an actual forward.
+  const isForward = /^\s*(FW|FWD|WG|TR|RV):/i.test(outer.subject || '');
+  const boundary = allowDirect && !isForward ? null : findForwardBoundary(bodyText);
   const warnings = [];
 
   if (!boundary) {
+    // Saving/dragging a message from Outlook produces the original email, not
+    // necessarily a forward. A forward subject still requires sender recovery.
+    if (allowDirect && !isForward) {
+      return {
+        forwardedBy: null,
+        csrNote: null,
+        mailingGroup: inferMailingGroup(outerRecipients, agentMailbox),
+        original: {
+          from: forwarder.address,
+          fromName: forwarder.name,
+          to: addressListFrom(outer.to),
+          cc: addressListFrom(outer.cc),
+          subject: outer.subject || null,
+          body: bodyText.trim(),
+          sentAt: outer.date ? outer.date.toISOString() : null,
+          attachments: describeAttachments(outer.attachments),
+        },
+        extraction: {
+          method: `${outer.format}_DIRECT`,
+          confidence: forwarder.address ? 1.0 : 0,
+          warnings: forwarder.address ? [] : ['Message had no resolvable sender email address. Review the sender before replying.'],
+        },
+      };
+    }
     return {
       forwardedBy: forwarder.address,
       csrNote: null,
@@ -295,6 +322,11 @@ async function parseForwardedEmail(raw, { agentMailbox = '' } = {}) {
   };
 }
 
+/** A saved original email or forwarded email uploaded through the UI. */
+async function parseUploadedEmail(raw, options = {}) {
+  return parseForwardedEmail(raw, { ...options, allowDirect: true });
+}
+
 /**
  * A message picked from the CSR's own Outlook inbox (via Graph).
  *
@@ -365,6 +397,9 @@ function buildManualEmail({ from, subject, body, mailingGroup }) {
 
 module.exports = {
   parseForwardedEmail,
+  parseUploadedEmail,
+  emailFileError,
+  MAX_EMAIL_BYTES,
   buildManualEmail,
   buildEmailFromGraphMessage,
   // exported for tests

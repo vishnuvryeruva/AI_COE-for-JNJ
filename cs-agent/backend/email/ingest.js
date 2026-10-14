@@ -1,8 +1,10 @@
 const { v4: uuid } = require('uuid');
+const { createHash } = require('node:crypto');
 const db = require('../db');
 const agent = require('../agent');
 const config = require('../config');
-const { parseForwardedEmail, buildManualEmail, buildEmailFromGraphMessage } = require('./parser');
+const { parseUploadedEmail, buildManualEmail, buildEmailFromGraphMessage } = require('./parser');
+const { isMsg } = require('./formats');
 
 /**
  * The single funnel every ingestion adapter goes through.
@@ -12,9 +14,9 @@ const { parseForwardedEmail, buildManualEmail, buildEmailFromGraphMessage } = re
  * shared, which is what makes the mechanism swappable — and, per Pramod, what
  * makes this piece reusable across other use cases.
  */
-async function ingest(email, source, sourceMessageId) {
+async function ingest(email, source, sourceMessageId, ownerAccountId = null) {
   if (sourceMessageId) {
-    const existing = await db.findBySourceMessageId(sourceMessageId);
+    const existing = await db.findBySourceMessageId(sourceMessageId, ownerAccountId);
     if (existing) return { request: existing, deduped: true };
   }
 
@@ -38,7 +40,7 @@ async function ingest(email, source, sourceMessageId) {
     };
   }
 
-  const request = await db.insertRequest(id, email, result, source, sourceMessageId);
+  const request = await db.insertRequest(id, email, result, source, sourceMessageId, ownerAccountId);
 
   await db.addAudit(id, 'system', 'INGESTED', `source=${source}, extraction=${email.extraction.method} (${email.extraction.confidence})`);
   if (result.status !== 'FAILED') {
@@ -51,16 +53,20 @@ async function ingest(email, source, sourceMessageId) {
   return { request, deduped: false };
 }
 
-/** Adapter: a forwarded .eml / rfc822 file uploaded through the UI. */
-async function ingestEml(buffer, filename) {
-  const email = await parseForwardedEmail(buffer, { agentMailbox: config.agentMailbox });
-  return ingest(email, 'EML_UPLOAD', `upload-${filename}-${buffer.length}`);
+/** Adapter: a saved or forwarded .eml / .msg file uploaded through the UI. */
+async function ingestUploadedEmail(buffer, filename, ownerAccountId = null) {
+  const email = await parseUploadedEmail(buffer, { filename, agentMailbox: config.agentMailbox });
+  const digest = createHash('sha256').update(buffer).digest('hex');
+  return ingest(email, isMsg(buffer) ? 'MSG_UPLOAD' : 'EML_UPLOAD', `upload-${digest}`, ownerAccountId);
 }
 
+// Preserve the existing demo/integration API while accepting both email formats.
+const ingestEml = ingestUploadedEmail;
+
 /** Adapter: the manual paste form. Demo path and test harness. */
-async function ingestManual({ from, subject, body, mailingGroup }) {
+async function ingestManual({ from, subject, body, mailingGroup }, ownerAccountId = null) {
   const email = buildManualEmail({ from, subject, body, mailingGroup });
-  return ingest(email, 'MANUAL', null);
+  return ingest(email, 'MANUAL', null, ownerAccountId);
 }
 
 /**
@@ -70,9 +76,9 @@ async function ingestManual({ from, subject, body, mailingGroup }) {
  * @param {object} graphMsg - full Graph message (from/to/cc/subject/body)
  * @param {string} selfAddress - the signed-in CSR, excluded from group inference
  */
-async function ingestGraphMessage(graphMsg, selfAddress) {
+async function ingestGraphMessage(graphMsg, selfAddress, ownerAccountId = null) {
   const email = buildEmailFromGraphMessage(graphMsg, selfAddress);
-  return ingest(email, 'GRAPH_PICK', graphMsg.internetMessageId || graphMsg.id);
+  return ingest(email, 'GRAPH_PICK', graphMsg.internetMessageId || graphMsg.id, ownerAccountId);
 }
 
-module.exports = { ingest, ingestEml, ingestManual, ingestGraphMessage };
+module.exports = { ingest, ingestUploadedEmail, ingestEml, ingestManual, ingestGraphMessage };

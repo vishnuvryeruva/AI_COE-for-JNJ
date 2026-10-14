@@ -13,7 +13,7 @@ The point of POC 1 is to retire the risk he named: *"everybody challenged with t
 - **Find emails in Outlook** by describing the request, such as **“Find sales orders from email”**, **“Find invoices this week”**, or **“Find packing lists for order 5003000237”**
 - **Inspect matches** with sender, subject, message preview, matching reason, and order references found in the email
 - **Prepare drafts** for one or all matches; existing requests are reused and individual failures can be retried
-- **Import manually** as a secondary option: upload a forwarded `.eml`, type an email, or load sample scenarios
+- **Import manually** as a secondary option: upload a saved or forwarded Outlook `.msg` or `.eml`, type an email, or load sample scenarios
 - **Recover the original sender** from the forward — the load-bearing part
 - **Detect intent** + extract the order number via SAP AI Core
 - **Draft a reply** addressed per the rule below
@@ -22,7 +22,7 @@ The point of POC 1 is to retire the risk he named: *"everybody challenged with t
 
 ## Outlook search workflow
 
-1. Configure Microsoft Graph using the instructions below, then select **Connect Outlook** and sign in.
+1. Configure Microsoft Graph using the instructions below, then select **Sign in with J&J account** (or **Connect Outlook** in local demo mode). Microsoft handles J&J credentials and any required MFA.
 2. Enter a request in **Describe the emails to find**, or select an example, and choose **Find emails**.
 3. Inspect the matching messages and extracted order references. Choose **Prepare draft** or **Prepare all drafts** to classify the emails and add them to the work queue.
 4. Open **Review draft**, check the sender and content, and approve the reply when ready.
@@ -40,7 +40,8 @@ Every path produces one normalized email object; the rest of the app doesn't kno
 | Adapter | How the email arrives | Sender confidence |
 |---|---|---|
 | `GRAPH_PICK` | A matching email is retrieved directly from the signed-in Outlook inbox | 1.0 — structured Graph headers |
-| `RFC822_ATTACHMENT` | Forward as Attachment (Ctrl+Alt+F) | 1.0 |
+| `MSG_DIRECT` / `EML_DIRECT` | Saved original Outlook email | 1.0 when the SMTP sender is available |
+| `MSG_ATTACHMENT` / `RFC822_ATTACHMENT` | Forward as Attachment (Ctrl+Alt+F) | 1.0 when the original SMTP sender is available |
 | `BODY_PARSE` | Plain forward | 0–0.9 |
 | `MANUAL` | Typed into the form | 1.0 if a valid address |
 
@@ -76,7 +77,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Open <http://localhost:8080>. Connect Outlook to find real emails, or expand **Import an email manually** and choose **Load scenario emails** for sample data.
+Open <http://localhost:8080>. Docker requires sign-in by default. For a local synthetic-data demo without Entra setup, explicitly add `AUTH_REQUIRED=false` to `.env`, then expand **Import an email manually** and choose **Load scenario emails**. Keep `AUTH_REQUIRED=true` for J&J/company data.
 
 For real intent detection put `AICORE_SERVICE_KEY` in `.env` — see [Local dev against real AI Core](#local-dev-against-real-ai-core).
 
@@ -113,10 +114,12 @@ For local Outlook sign-in through Vite, register and set `AZURE_REDIRECT_URI=htt
 ```bash
 npm run build
 npm test --prefix backend
+# Optional HTTP + real PostgreSQL verification, using a disposable test database:
+CS_AGENT_TEST_DATABASE_URL=postgresql://user@localhost/test_db node --test backend/integration.test.js
 PLAYWRIGHT_PATH=/path/to/playwright CHROME_PATH=/path/to/chrome npm run smoke
 ```
 
-The browser smoke test starts Vite on port 5174 and intercepts every API call. It checks Outlook setup/sign-in states, search, draft preparation, duplicate handling, partial failures, review navigation, and mobile layout without reading or sending real email. Set `SMOKE_BASE_URL` to use an existing Vite server instead.
+The browser smoke test starts Vite on port 5174 and intercepts every API call. It checks login enforcement, sign-out/session expiry, Outlook search, draft preparation, duplicate handling, upload validation/retries, readable 502 errors, review navigation, and mobile layout without reading or sending real email. Set `SMOKE_BASE_URL` to use an existing Vite server instead.
 
 ## Deploy to BTP Cloud Foundry
 
@@ -139,16 +142,19 @@ The SDK reads the binding out of `VCAP_SERVICES`, so no key goes in the manifest
 
 ## Enabling Outlook (Microsoft Graph)
 
-The Outlook search panel is always visible. Without the `AZURE_*` configuration
-(see `.env.example`), it shows **Outlook setup required**. Microsoft sign-in and
-live search become available once configured. Same code, two tenants:
+Production deployments require sign-in before any email, queue, upload, audit, or review API can be used. Missing Entra configuration displays **J&J sign-in setup required** and blocks data access. The frontend waits for the authentication check before loading the queue.
+
+`AUTH_REQUIRED` defaults to `true` with `NODE_ENV=production`; set it explicitly for your environment. The same Microsoft sign-in grants delegated Outlook access. A specific tenant GUID and a random `COOKIE_SECRET` of at least 32 characters are required. The backend uses authorization code with PKCE, nonce/state validation, signed HttpOnly cookies, and an eight-hour session lifetime. J&J passwords are entered only on Microsoft’s sign-in page.
+
+Each user has a private imported-email queue, drafts, counts and audit access. Existing unowned/demo rows are preserved and remain accessible only in anonymous demo mode; they are not assigned to a signed-in employee automatically. Upload duplicates are detected by content hash within the user's queue.
 
 ### Option A — a dev tenant you own (try it this week, no waiting)
 
-1. Get a free **Microsoft 365 Developer** tenant (`developer.microsoft.com/microsoft-365/dev-program`) — comes with demo mailboxes and users. You're the admin, so you self-consent in minutes.
+1. Use a development Microsoft 365 tenant with a licensed Exchange Online test mailbox and permission to register/approve apps.
 2. **Entra admin → App registrations → New registration**
+   - Supported accounts: **Accounts in this organizational directory only**
    - Redirect URI (Web): `http://localhost:8080/api/v1/auth/callback` (local) or the CF URL for the deployed app
-   - **API permissions → Microsoft Graph → Delegated:** `User.Read`, `Mail.Read`, `Mail.Send`, `offline_access` → **Grant admin consent**
+   - **API permissions → Microsoft Graph → Delegated:** `User.Read`, `Mail.Read`, `Mail.Send`; sign-in also requests `openid`, `profile`, `offline_access`. Have the tenant administrator approve the requested access.
    - **Certificates & secrets → New client secret**
 3. Put the values in `.env`:
    ```
@@ -156,17 +162,18 @@ live search become available once configured. Same code, two tenants:
    AZURE_CLIENT_SECRET=...
    AZURE_TENANT_ID=...          # the dev tenant's Directory (tenant) ID
    AZURE_REDIRECT_URI=http://localhost:8080/api/v1/auth/callback
-   COOKIE_SECRET=<long random string>
+   COOKIE_SECRET=<at least 32 random characters>
+   AUTH_REQUIRED=true
    ```
-4. `docker compose up --build` → open the app → **Connect Outlook** → **Find emails** → **Prepare draft** → review → **Approve & send via Outlook**.
+4. `docker compose up --build` → open the app → **Sign in with J&J account** → **Find emails** → **Prepare draft** → review → **Approve & send via Outlook**.
 
-Demo with the tenant's synthetic mailboxes. Everything works end to end, including a real send that lands in Sent Items.
+Use synthetic test mailboxes. Validate sign-in, search, draft review and an explicitly approved test send before enabling company users. Live J&J verification requires the actual tenant configuration.
 
 ### Option B — J&J tenant (the real target)
 
-Same four permissions, granted by J&J IT in the J&J Entra tenant. See
+Use the same delegated scopes, with the J&J tenant GUID and approval from J&J IT. IT should restrict the enterprise application to approved users/groups. See
 [`JNJ-IT-App-Registration-Request.md`](../JNJ-IT-App-Registration-Request.md) —
-send that request, and when IT returns the client ID / tenant ID / secret, set
+use that request for the IT intake, and when IT returns the client ID / tenant ID / secret, set
 them via `cf set-env` (redirect URI = the CF app URL) and restart. **No code
 changes** between Option A and Option B.
 
@@ -175,7 +182,8 @@ cf set-env cs-agent AZURE_CLIENT_ID     "<from IT>"
 cf set-env cs-agent AZURE_CLIENT_SECRET "<from IT>"
 cf set-env cs-agent AZURE_TENANT_ID     "<from IT>"
 cf set-env cs-agent AZURE_REDIRECT_URI  "https://cs-agent.cfapps.us10.hana.ondemand.com/api/v1/auth/callback"
-cf set-env cs-agent COOKIE_SECRET       "<long random string>"
+cf set-env cs-agent COOKIE_SECRET       "<at least 32 random characters>"
+cf set-env cs-agent AUTH_REQUIRED        "true"
 cf restart cs-agent
 ```
 
@@ -216,7 +224,7 @@ Every adapter produces one normalized email object; nothing downstream knows whi
 
 ```
 manual paste  ─┐
-.eml upload   ─┤
+.eml/.msg     ─┤
 Graph poll    ─┼──► InboundEmail ──► agent ──► draft ──► review
 Graph webhook ─┘     (normalized)
 ```
@@ -224,7 +232,7 @@ Graph webhook ─┘     (normalized)
 | Adapter | Status |
 |---|---|
 | `ingestManual` | ✅ working |
-| `ingestEml` | ✅ working |
+| `ingestUploadedEmail` (`ingestEml` alias) | ✅ `.msg` and `.eml`, direct messages and forwarded attachments |
 | `ingestGraphMessage` | ✅ implemented; live use requires Entra app registration and sign-in |
 | Graph webhook | Phase 3 |
 
@@ -244,15 +252,24 @@ Harmless in POC 1 (the field is displayed, nothing depends on it). Do not carry 
 
 | Gap | Why |
 |---|---|
-| **Sending without Outlook** | If **not** signed in to Outlook, Approve records the decision but doesn't send. Signed in, it sends for real via Graph `sendMail`. |
+| **Sending without Outlook** | With Outlook configured, an expired/missing token returns a sign-in error and never marks the reply sent. Only an explicitly unconfigured demo can record a stub approval. |
 | **Graph auto-polling** | Outlook messages are found on demand using the search command. Unattended ingestion and Graph subscriptions are not implemented. |
 | **ERP data / documents** | POC 2 |
 | **Business rules** | Full project |
-| **App auth (XSUAA)** | The app itself has no gate — anyone with the URL can use the non-Outlook features. Outlook actions require Microsoft sign-in, but the app shell should still get XSUAA before real customer data. |
+| **Production hardening** | Entra sign-in and private queues are implemented. IT must still approve users, data retention and protected token/database storage. The shared MSAL cache is serialized for one backend process; implement distributed locking or partitioned caches before scaling. |
 
 ### On sending: don't use SMTP
 
-Microsoft removed Basic Auth for SMTP AUTH in Exchange Online, and a BTP app sending as `@jnj.com` from SAP's IP ranges fails SPF/DKIM/DMARC and lands in junk. Graph `sendMail` sidesteps both: the mail leaves J&J's own Exchange tenant from a real mailbox and inherits its reputation. See `../Phase1-Email-Forward-Approach.md` §11.
+This app uses Microsoft Graph to read the signed-in user’s Inbox and send approved replies from that user’s Exchange Online mailbox. It does not require SMTP credentials. See [Microsoft’s delegated-access guide](https://learn.microsoft.com/en-us/graph/auth-v2-user).
+
+## Saved Outlook files and troubleshooting
+
+The upload control accepts `.msg` and `.eml` files up to 32 MB. Binary MSG decoding runs in an isolated worker with a five-second timeout and a heap limit. Original sender, body, recipients, date and attachment metadata feed the existing review workflow; nested message attachments use the correct decoder. Exchange directory identifiers without an SMTP address stay unresolved and require review. Attachment contents are not analyzed.
+
+Malformed, unsupported or oversized files return actionable 400/413 responses. Protected/encrypted messages and MSG files containing only compressed Rich Text cannot be decoded by this implementation; the UI explains the limitation. HTML and plain-text MSG bodies are supported. Renaming a file extension does not convert its contents.
+
+A proxy 502 means the upstream API failed or was unavailable; it does not identify the cause by itself. The previous code had no binary MSG decoder. These changes add one and handle parser errors, but a reported deployed 502 still needs correlation with the Cloud Foundry app/container logs. Verify the deployed image contains this version, the backend is healthy, and the container has sufficient memory. Callback query strings are excluded from the application/nginx access logs.
+
 
 ## Layout
 
@@ -270,7 +287,7 @@ src/
   App.tsx              Outlook-first shell, tiles, queue
   components/
     MailboxPanel.tsx   Outlook connection, natural-language search, draft preparation
-    IngestPanel.tsx    secondary .eml import / manual entry
+    IngestPanel.tsx    .msg/.eml import / manual entry
     QueueTable.tsx     work queue
     RequestDetail.tsx  three-pane review
 ```

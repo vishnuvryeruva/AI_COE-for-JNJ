@@ -37,14 +37,15 @@ async function graphGet(token, path, headers = {}) {
 }
 
 async function graphPost(token, path, payload) {
-  const res = await fetch(`${GRAPH}${path}`, {
+  const res = await fetch(graphUrl(path), {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(15000),
+    redirect: 'error',
   });
   if (!res.ok && res.status !== 202) {
-    const body = await res.text();
-    throw new Error(`Graph POST ${path} failed: ${res.status} ${body.slice(0, 300)}`);
+    throw new GraphError(res.status);
   }
   return res.status === 202 ? {} : res.json().catch(() => ({}));
 }

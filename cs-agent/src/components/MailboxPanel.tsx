@@ -77,7 +77,6 @@ export default function MailboxPanel({ auth, onAuthChange, onIngested, onError, 
       setResult(null);
       setPreparations({});
       setError('Your Outlook session has expired. Connect Outlook again to continue.');
-      onAuthChange();
       return true;
     }
     if (err instanceof ApiError && err.code === 'OUTLOOK_NOT_CONFIGURED') {
@@ -197,7 +196,6 @@ export default function MailboxPanel({ auth, onAuthChange, onIngested, onError, 
         setPreparations({});
         setNotice(null);
         setExpired(true);
-        onAuthChange();
       }
     } catch (err) {
       if (current === generation.current) onError(errorMessage(err));
@@ -249,7 +247,7 @@ export default function MailboxPanel({ auth, onAuthChange, onIngested, onError, 
             <span className="mailbox-connect-icon"><MailIcon /></span>
             <div>
               <h3>{!auth.configured ? 'Outlook setup required' : expired ? 'Reconnect your Outlook mailbox' : 'Connect your Outlook mailbox'}</h3>
-              <p>{!auth.configured ? 'A workspace administrator needs to configure the Microsoft Outlook connection before inbox search is available.' : 'Sign in with your Microsoft work account to find real emails and prepare draft replies.'}</p>
+              <p>{!auth.configured ? 'A workspace administrator needs to configure the Microsoft Outlook connection before inbox search is available.' : 'Sign in with your J&J Microsoft work account to find real emails and prepare draft replies.'}</p>
             </div>
             {auth.configured && <a className="mailbox-primary" href={api.authLoginUrl}>Connect Outlook<span aria-hidden="true">↗</span></a>}
           </div>

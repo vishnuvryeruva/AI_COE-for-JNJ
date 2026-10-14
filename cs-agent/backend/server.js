@@ -13,6 +13,7 @@ const { scenarios } = require('./scenarios');
 const graphAuth = require('./msgraph/auth');
 const graph = require('./msgraph/graph');
 const { createSearchHandler } = require('./msgraph/mailbox');
+const { createAuthHandlers } = require('./msgraph/auth-routes');
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 32 * 1024 * 1024 } });
@@ -21,16 +22,17 @@ app.set('trust proxy', 1); // behind nginx on CF — needed for req.secure / sec
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 app.use(cookieParser(config.cookieSecret));
-app.use(morgan('tiny'));
+app.use(morgan('tiny', { skip: (req) => req.path === '/api/v1/auth/callback' }));
 
 const api = express.Router();
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
 // Resolve the signed-in Microsoft account (if any) for this request.
-async function sessionFrom(req) {
-  return db.getSession(req.cookies?.sid);
-}
+const authHandlers = createAuthHandlers({ auth: graphAuth, db, config });
+const sessionFrom = authHandlers.sessionFrom;
+const ownerFor = (req) => req.authSession?.home_account_id || null;
+const actorFor = (req) => req.authSession?.username || 'csr';
 async function graphTokenFor(req) {
   const session = await sessionFrom(req);
   if (!session) return null;
@@ -43,41 +45,15 @@ api.get('/health', (_req, res) => {
 
 // --- Microsoft Graph delegated auth ---
 
-api.get('/auth/status', wrap(async (req, res) => {
-  const configured = graphAuth.isConfigured();
-  const session = configured ? await sessionFrom(req) : null;
-  res.json({
-    configured,
-    signedIn: Boolean(session),
-    username: session?.username || null,
-  });
-}));
+api.use(authHandlers.requireSameOrigin);
+api.get('/auth/status', wrap(authHandlers.status));
+api.get('/auth/login', wrap(authHandlers.login));
+api.get('/auth/callback', wrap(authHandlers.callback));
+api.post('/auth/logout', wrap(authHandlers.logout));
 
-api.get('/auth/login', wrap(async (req, res) => {
-  if (!graphAuth.isConfigured()) return res.status(400).send('Microsoft Graph is not configured.');
-  const state = graphAuth.newState();
-  res.cookie('oauth_state', state, graphAuth.cookieOptions(req));
-  res.redirect(await graphAuth.getLoginUrl(state));
-}));
-
-api.get('/auth/callback', wrap(async (req, res) => {
-  const { code, state } = req.query;
-  if (!code || !state || state !== req.cookies?.oauth_state) {
-    return res.status(400).send('Login failed: state mismatch. Please try again.');
-  }
-  const account = await graphAuth.handleCallback(String(code));
-  const sid = graphAuth.newSessionId();
-  await db.createSession(sid, account.homeAccountId, account.username);
-  res.clearCookie('oauth_state');
-  res.cookie('sid', sid, graphAuth.cookieOptions(req));
-  res.redirect(config.azure.postLoginUri);
-}));
-
-api.post('/auth/logout', wrap(async (req, res) => {
-  await db.deleteSession(req.cookies?.sid);
-  res.clearCookie('sid');
-  res.json({ ok: true });
-}));
+// Protect every data endpoint, including uploads, queue, audit and approval.
+api.use((_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+api.use(wrap(authHandlers.requireSignIn));
 
 // --- Mailbox (the signed-in CSR's own inbox) ---
 
@@ -98,12 +74,12 @@ api.post('/mailbox/messages/:id/ingest', wrap(async (req, res) => {
   if (!token) return res.status(401).json({ error: 'Not signed in to Outlook' });
   const me = await graph.getMe(token);
   const message = await graph.getMessage(token, req.params.id);
-  const { request, deduped } = await ingest.ingestGraphMessage(message, me.email);
+  const { request, deduped } = await ingest.ingestGraphMessage(message, me.email, ownerFor(req));
   res.status(deduped ? 200 : 201).json({ request, deduped });
 }));
 
-api.get('/stats', wrap(async (_req, res) => {
-  res.json(await db.stats());
+api.get('/stats', wrap(async (req, res) => {
+  res.json(await db.stats(ownerFor(req)));
 }));
 
 api.get('/intents', (_req, res) => {
@@ -112,13 +88,13 @@ api.get('/intents', (_req, res) => {
 
 api.get('/requests', wrap(async (req, res) => {
   const { status, intent } = req.query;
-  res.json(await db.listRequests({ status, intent }));
+  res.json(await db.listRequests({ status, intent }, ownerFor(req)));
 }));
 
 api.get('/requests/:id', wrap(async (req, res) => {
-  const request = await db.getRequest(req.params.id);
+  const request = await db.getRequest(req.params.id, ownerFor(req));
   if (!request) return res.status(404).json({ error: 'Not found' });
-  request.audit = await db.getAudit(req.params.id);
+  request.audit = await db.getAudit(req.params.id, ownerFor(req));
   res.json(request);
 }));
 
@@ -126,21 +102,21 @@ api.get('/requests/:id', wrap(async (req, res) => {
 
 api.post('/requests/upload', upload.single('file'), wrap(async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-  const { request, deduped } = await ingest.ingestEml(req.file.buffer, req.file.originalname);
+  const { request, deduped } = await ingest.ingestUploadedEmail(req.file.buffer, req.file.originalname, ownerFor(req));
   res.status(deduped ? 200 : 201).json({ request, deduped });
 }));
 
 api.post('/requests/manual', wrap(async (req, res) => {
   const { from, subject, body, mailingGroup } = req.body || {};
   if (!from || !body) return res.status(400).json({ error: 'from and body are required' });
-  const { request } = await ingest.ingestManual({ from, subject, body, mailingGroup });
+  const { request } = await ingest.ingestManual({ from, subject, body, mailingGroup }, ownerFor(req));
   res.status(201).json({ request });
 }));
 
-api.post('/requests/scenarios', wrap(async (_req, res) => {
+api.post('/requests/scenarios', wrap(async (req, res) => {
   const created = [];
   for (const scenario of scenarios) {
-    const { request } = await ingest.ingestEml(Buffer.from(scenario.eml, 'utf8'), scenario.name);
+    const { request } = await ingest.ingestEml(Buffer.from(scenario.eml, 'utf8'), scenario.name, ownerFor(req));
     created.push(request);
   }
   res.status(201).json({ created: created.length, requests: created });
@@ -150,14 +126,14 @@ api.post('/requests/scenarios', wrap(async (_req, res) => {
 
 api.patch('/requests/:id/draft', wrap(async (req, res) => {
   const { subject, body, to, cc } = req.body || {};
-  const request = await db.updateDraft(req.params.id, { subject, body, to, cc });
+  const request = await db.updateDraft(req.params.id, { subject, body, to, cc }, ownerFor(req));
   if (!request) return res.status(404).json({ error: 'Not found' });
-  await db.addAudit(req.params.id, req.body.actor || 'csr', 'DRAFT_EDITED', null);
+  await db.addAudit(req.params.id, actorFor(req), 'DRAFT_EDITED', null);
   res.json(request);
 }));
 
 api.post('/requests/:id/regenerate', wrap(async (req, res) => {
-  const existing = await db.getRequest(req.params.id);
+  const existing = await db.getRequest(req.params.id, ownerFor(req));
   if (!existing) return res.status(404).json({ error: 'Not found' });
 
   const email = {
@@ -166,20 +142,20 @@ api.post('/requests/:id/regenerate', wrap(async (req, res) => {
     extraction: existing.extraction,
   };
   const drafted = await agent.draft(email, existing.analysis);
-  const request = await db.updateDraft(req.params.id, { subject: drafted.subject, body: drafted.body });
-  await db.addAudit(req.params.id, req.body?.actor || 'csr', 'REGENERATED', null);
+  const request = await db.updateDraft(req.params.id, { subject: drafted.subject, body: drafted.body }, ownerFor(req));
+  await db.addAudit(req.params.id, actorFor(req), 'REGENERATED', null);
   res.json(request);
 }));
 
 api.post('/requests/:id/approve', wrap(async (req, res) => {
-  const existing = await db.getRequest(req.params.id);
+  const existing = await db.getRequest(req.params.id, ownerFor(req));
   if (!existing) return res.status(404).json({ error: 'Not found' });
   if (!existing.draft.to) {
     return res.status(400).json({ error: 'Cannot send: no recipient. Set the original sender first.' });
   }
 
   const token = await graphTokenFor(req);
-  const actor = req.body?.actor || 'csr';
+  const actor = actorFor(req);
   const recipients = `to=${existing.draft.to}, cc=${(existing.draft.cc || []).join(',') || 'none'}`;
 
   if (token) {
@@ -190,44 +166,71 @@ api.post('/requests/:id/approve', wrap(async (req, res) => {
       subject: existing.draft.subject,
       body: existing.draft.body,
     });
-    const request = await db.setStatus(req.params.id, 'SENT', 'Sent via Outlook');
+    const request = await db.setStatus(req.params.id, 'SENT', 'Sent via Outlook', ownerFor(req));
     await db.addAudit(req.params.id, actor, 'SENT', `${recipients} — sent via Microsoft Graph`);
     return res.json({ ...request, sent: true });
   }
 
+  if (graphAuth.isConfigured() || config.authRequired) {
+    return res.status(401).json({ code: 'OUTLOOK_SIGN_IN_REQUIRED', error: 'Reconnect Outlook before sending. This reply has not been sent.' });
+  }
+
   // Not signed in — record the approval but don't send. Demo/offline path.
-  const request = await db.setStatus(req.params.id, 'SENT', 'Approved (send stubbed — not signed in to Outlook)');
+  const request = await db.setStatus(req.params.id, 'SENT', 'Approved (send stubbed — not signed in to Outlook)', ownerFor(req));
   await db.addAudit(req.params.id, actor, 'APPROVED', `${recipients} — send stubbed`);
   res.json({ ...request, sent: false });
 }));
 
 api.post('/requests/:id/reject', wrap(async (req, res) => {
   const { reasonCode, comment } = req.body || {};
-  const request = await db.setStatus(req.params.id, 'REJECTED', reasonCode || 'Rejected by reviewer');
+  const request = await db.setStatus(req.params.id, 'REJECTED', reasonCode || 'Rejected by reviewer', ownerFor(req));
   if (!request) return res.status(404).json({ error: 'Not found' });
-  await db.addAudit(req.params.id, req.body?.actor || 'csr', 'REJECTED', comment || reasonCode || null);
+  await db.addAudit(req.params.id, actorFor(req), 'REJECTED', comment || reasonCode || null);
   res.json(request);
 }));
 
 app.use('/api/v1', api);
 
 app.use((err, _req, res, _next) => {
-  console.error('[error]', err);
-  res.status(500).json({ error: err.message || 'Internal error' });
+  if (err instanceof multer.MulterError) {
+    return res.status(err.code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({
+      code: err.code,
+      error: err.code === 'LIMIT_FILE_SIZE' ? 'Email files must be 32 MB or smaller.' : 'Upload one .eml or .msg email file at a time.',
+    });
+  }
+  if (err instanceof graph.GraphError) {
+    const status = [401, 403, 429].includes(err.status) ? err.status : 502;
+    const error = status === 401 ? 'Your Outlook connection expired. Sign in again.'
+      : status === 403 ? 'Outlook denied access. Ask J&J IT to check the app permissions.'
+      : status === 429 ? 'Outlook is limiting requests. Wait a moment and try again.'
+      : 'Outlook could not complete the request. Please try again.';
+    return res.status(status).json({ code: 'OUTLOOK_REQUEST_FAILED', error });
+  }
+  const status = Number(err.statusCode || err.status);
+  if (status >= 400 && status < 500) {
+    return res.status(status).json({ code: err.code || 'INVALID_REQUEST', error: err.message });
+  }
+  // Do not leak email content, OAuth tokens or database details to clients/logs.
+  console.error('[error]', err.code || err.name || 'Internal error');
+  res.status(500).json({ error: 'The request could not be completed. Please try again.' });
 });
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
-db.init()
-  .then(() => {
-    app.listen(PORT, () => {
-      console.log(`[server] CS Agent API on :${PORT}`);
-      console.log(`[server] AI Core: ${aiCore.isConfigured() ? 'configured' : 'NOT configured — using keyword stub'}`);
-      console.log(`[server] Outlook/Graph: ${graphAuth.isConfigured() ? `configured (tenant ${config.azure.tenantId})` : 'NOT configured — Outlook setup required'}`);
-      console.log(`[server] Agent mailbox: ${config.agentMailbox}`);
+if (require.main === module) {
+  db.init()
+    .then(() => {
+      app.listen(PORT, () => {
+        console.log(`[server] CS Agent API on :${PORT}`);
+        console.log(`[server] AI Core: ${aiCore.isConfigured() ? 'configured' : 'NOT configured — using keyword stub'}`);
+        console.log(`[server] Outlook/Graph: ${graphAuth.isConfigured() ? 'configured' : 'NOT configured — Outlook setup required'}`);
+        console.log(`[server] Sign-in required: ${config.authRequired}`);
+      });
+    })
+    .catch((err) => {
+      console.error('[server] Failed to initialize database:', err.code || err.name);
+      process.exit(1);
     });
-  })
-  .catch((err) => {
-    console.error('[server] Failed to initialize database:', err);
-    process.exit(1);
-  });
+}
+
+module.exports = { app };

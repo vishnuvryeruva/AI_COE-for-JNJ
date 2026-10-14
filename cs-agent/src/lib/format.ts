@@ -17,6 +17,9 @@ export const STATUS_TONE: Record<Status, string> = {
 };
 
 export const EXTRACTION_LABEL: Record<string, string> = {
+  MSG_DIRECT: 'Saved Outlook message',
+  EML_DIRECT: 'Saved email headers',
+  MSG_ATTACHMENT: 'Forwarded Outlook attachment',
   RFC822_ATTACHMENT: 'Forwarded as attachment',
   BODY_PARSE: 'Parsed from message body',
   MANUAL: 'Entered manually',
