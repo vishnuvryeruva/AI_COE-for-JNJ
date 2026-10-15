@@ -61,6 +61,7 @@ The app administrator will configure these backend settings through approved dep
 | Setting | Value |
 |---|---|
 | `AUTH_REQUIRED` | `true` |
+| `GUEST_DEMO_ENABLED` | `false` for the company rollout |
 | `AZURE_CLIENT_ID` | IT-provided client ID |
 | `AZURE_TENANT_ID` | J&J tenant GUID; `common`/`organizations` are not accepted |
 | `AZURE_CLIENT_SECRET` | IT-provided secret |
@@ -70,7 +71,7 @@ The app administrator will configure these backend settings through approved dep
 
 Deploy the reviewed image in the correct J&J BTP organization/space and restart after configuration. The intended location recorded in the repository is org `jnj-cb-sbx-ai`, space `jnj-cb-sbx-so-poc`, region us10; verify the active Cloud Foundry target before making changes.
 
-With `AUTH_REQUIRED=true`, missing sign-in configuration blocks application data access and shows a setup message. `AUTH_REQUIRED=false` is reserved for an isolated synthetic-data demo.
+The temporary showcase configuration enables `GUEST_DEMO_ENABLED=true`: users can select **Continue as guest** without Entra setup. Each guest has a separate session/queue and can import sample emails, review drafts and record demo approvals; guests cannot access Outlook or send mail. For the company rollout, set `GUEST_DEMO_ENABLED=false` and `AUTH_REQUIRED=true`. Missing Entra configuration then blocks workspace access. `AUTH_REQUIRED=false` is an older anonymous development mode, not required for the showcase.
 
 ## Data handling and pilot boundaries
 

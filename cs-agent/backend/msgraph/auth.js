@@ -10,12 +10,20 @@ const SESSION_MAX_AGE = 8 * 60 * 60 * 1000;
 const FLOW_MAX_AGE = 10 * 60 * 1000;
 const TENANT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+function hasSafeCookieSecret(settings = config) {
+  return typeof settings.cookieSecret === 'string' && settings.cookieSecret.length >= 32 &&
+    settings.cookieSecret !== 'dev-cookie-secret-change-me';
+}
+function isGuestSession(session) {
+  return typeof session?.home_account_id === 'string' && session.home_account_id.startsWith('guest:');
+}
+
 function configurationIssues(settings = config) {
   const issues = [];
   if (!settings.azure.clientId) issues.push('AZURE_CLIENT_ID');
   if (!settings.azure.clientSecret) issues.push('AZURE_CLIENT_SECRET');
   if (!TENANT_ID.test(settings.azure.tenantId)) issues.push('AZURE_TENANT_ID (Directory tenant GUID)');
-  if (!settings.cookieSecret || settings.cookieSecret.length < 32 || settings.cookieSecret === 'dev-cookie-secret-change-me') {
+  if (!hasSafeCookieSecret(settings)) {
     issues.push('COOKIE_SECRET (at least 32 random characters)');
   }
   try {
@@ -124,7 +132,7 @@ async function handleCallback(code, transaction) {
   });
 }
 async function getAccessTokenForSession(session) {
-  if (!session || !isConfigured()) return null;
+  if (!session || isGuestSession(session) || !isConfigured()) return null;
   return withCache(async () => {
     const accounts = await client().getTokenCache().getAllAccounts();
     const account = accounts.find((item) => item.homeAccountId === session.home_account_id &&
@@ -141,11 +149,11 @@ async function getAccessTokenForSession(session) {
     }
   });
 }
-function cookieOptions(req, { flow = false, clear = false } = {}) {
+function cookieOptions(req, { flow = false, clear = false, guest = false } = {}) {
   const options = {
     httpOnly: true,
     sameSite: 'lax',
-    secure: Boolean(req.secure || config.azure.redirectUri.startsWith('https:')),
+    secure: Boolean(req.secure || (!guest && config.azure.redirectUri.startsWith('https:'))),
     signed: true,
     path: flow ? '/api/v1/auth' : '/',
   };
@@ -154,7 +162,7 @@ function cookieOptions(req, { flow = false, clear = false } = {}) {
 }
 
 module.exports = {
-  isConfigured, configurationIssues, SCOPES, SESSION_MAX_AGE, FLOW_MAX_AGE,
+  isConfigured, configurationIssues, hasSafeCookieSecret, isGuestSession, SCOPES, SESSION_MAX_AGE, FLOW_MAX_AGE,
   getLoginUrl, handleCallback, getAccessTokenForSession,
   newSessionId, newState, newLoginTransaction, validTransaction, validateIdentity, cookieOptions,
 };

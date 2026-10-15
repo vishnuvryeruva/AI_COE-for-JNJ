@@ -89,7 +89,7 @@ async function scenario(browser, auth, run, options = {}) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
-  const state = { auth: { required: true, ...auth }, requests: options.requests || [], apiCalls: [], unexpected: [], errors: [], ingested: [], prompts: [], uploads: [], failThird: true, failUpload: null, authFailure: false, releaseSearch: null, releaseAuth: null };
+  const state = { auth: { required: true, guest: false, guestEnabled: false, ...auth }, requests: options.requests || [], apiCalls: [], unexpected: [], errors: [], ingested: [], prompts: [], uploads: [], failThird: true, failUpload: null, authFailure: false, releaseSearch: null, releaseAuth: null, guestStartError: null, expireRequests: false, demoApprovals: 0 };
   page.on('pageerror', (error) => state.errors.push(error.message));
   await context.route('**/*', async (route) => {
     const req = route.request();
@@ -110,11 +110,51 @@ async function scenario(browser, auth, run, options = {}) {
       return json(state.auth);
     }
     if (call === 'POST /auth/logout') {
-      state.auth.signedIn = false; state.auth.username = null;
+      if (state.auth.guest) state.requests = [];
+      state.auth.signedIn = false; state.auth.guest = false; state.auth.username = null;
       return json({ ok: true });
     }
-    if (call === 'GET /requests') return json(state.requests.filter((item) => !url.searchParams.has('status') || item.status === url.searchParams.get('status')));
-    if (call === 'GET /stats') return json({ READY: state.requests.length, NEEDS_REVIEW: 0, FAILED: 0, SENT: 0, REJECTED: 0, TOTAL: state.requests.length });
+    if (call === 'POST /auth/guest') {
+      if (state.guestStartError) return json({ error: 'Guest demo is unavailable.', code: state.guestStartError }, state.guestStartError === 'GUEST_DEMO_DISABLED' ? 403 : 503);
+      assert.equal(state.auth.guestEnabled, true);
+      state.auth.guest = true; state.auth.signedIn = false; state.auth.username = null;
+      state.requests = [];
+      return json({ ok: true, guest: true });
+    }
+    if (call === 'GET /requests') {
+      if (state.expireRequests) return json({ error: 'Sign in required', code: 'AUTH_SIGN_IN_REQUIRED' }, 401);
+      return json(state.requests.filter((item) => !url.searchParams.has('status') || item.status === url.searchParams.get('status')));
+    }
+    if (call === 'GET /stats') return json(Object.fromEntries(['READY', 'NEEDS_REVIEW', 'FAILED', 'SENT', 'APPROVED', 'REJECTED'].map((status) => [status, state.requests.filter((item) => item.status === status).length]).concat([['TOTAL', state.requests.length]])));
+    if (call === 'POST /requests/scenarios' && options.guestWorkflow) {
+      assert.equal(state.auth.guest, true);
+      const created = messageFixtures.map((message) => ({ ...requestFixture(message), source: 'SCENARIO' }));
+      state.requests.push(...created);
+      return json({ created: created.length, requests: created });
+    }
+    if (call === 'POST /requests/manual' && options.guestWorkflow) {
+      assert.equal(state.auth.guest, true);
+      const payload = req.postDataJSON();
+      const created = requestFixture({ ...messageFixtures[0], id: 'guest-manual', from: payload.from, subject: payload.subject, preview: payload.body });
+      state.requests.push(created);
+      return json({ request: created });
+    }
+    const draftMatch = endpoint.match(/^\/requests\/([^/]+)\/draft$/);
+    if (req.method() === 'PATCH' && draftMatch && options.guestWorkflow) {
+      assert.equal(state.auth.guest, true);
+      const draft = state.requests.find((item) => item.id === draftMatch[1]);
+      Object.assign(draft.draft, req.postDataJSON());
+      return json(draft);
+    }
+    const approveMatch = endpoint.match(/^\/requests\/([^/]+)\/approve$/);
+    if (req.method() === 'POST' && approveMatch && options.guestWorkflow) {
+      assert.equal(state.auth.guest, true);
+      const draft = state.requests.find((item) => item.id === approveMatch[1]);
+      draft.status = 'APPROVED';
+      draft.statusReason = 'Approved in guest demo. No email was sent.';
+      state.demoApprovals += 1;
+      return json({ ...draft, sent: false });
+    }
     if (call === 'POST /requests/upload' && options.allowUploads) {
       const name = req.postDataBuffer().toString('utf8').match(/filename="([^"]+)"/)?.[1];
       state.uploads.push(name);
@@ -166,7 +206,11 @@ async function scenario(browser, auth, run, options = {}) {
     await run(page, state);
     assert.deepEqual(state.unexpected, [], 'Only expected local resources and intercepted APIs were requested');
     assert.deepEqual(state.errors, [], 'No browser runtime errors');
-    assert.ok(!state.apiCalls.some((call) => /approve|send|regenerate|manual/.test(call)), 'These checks never send email or modify drafts');
+    if (options.guestWorkflow) {
+      assert.ok(!state.apiCalls.some((call) => /mailbox|send/.test(call)), 'Guest demo never accesses live mailbox routes');
+    } else {
+      assert.ok(!state.apiCalls.some((call) => /approve|send|regenerate|manual/.test(call)), 'These checks never send email or modify drafts');
+    }
     if (!options.allowUploads) assert.equal(state.uploads.length, 0);
   } catch (error) {
     await page.screenshot({ path: path.join(screenshotDirectory, 'cs-agent-ui-failure.png'), fullPage: true }).catch(() => {});
@@ -377,6 +421,88 @@ async function main() {
       assert.equal(await page.getByRole('textbox', { name: 'Body', exact: true }).inputValue(), '', 'Logout clears local customer email input even in optional-auth development mode');
     });
     console.log('PASS: Optional-auth development logout also clears unsaved customer email inputs.');
+
+    await scenario(browser, { configured: false, signedIn: false, guestEnabled: true, username: null }, async (page, state) => {
+      await expectVisible(page.getByRole('heading', { name: 'Explore Email Operations', exact: true }));
+      const enter = page.getByRole('button', { name: 'Continue as guest', exact: true });
+      await expectVisible(enter);
+      assert.ok(!state.apiCalls.some((call) => /requests|stats|mailbox/.test(call)), 'Guest session is required before demo data loads');
+      await page.screenshot({ path: path.join(screenshotDirectory, 'cs-agent-ui-guest-entry.png'), fullPage: true });
+      await enter.click();
+      await expectVisible(page.getByRole('button', { name: 'Exit demo', exact: true }));
+      await expectVisible(page.getByRole('button', { name: 'Load demo emails', exact: true }));
+      await expectText(page.locator('.guest-notice'), 'Guest demo: Outlook is not connected; replies are not sent.');
+      assert.equal(await page.getByRole('button', { name: 'Find emails', exact: true }).count(), 0);
+      await expectVisible(page.getByRole('button', { name: 'Upload Outlook .msg or .eml emails', exact: true }));
+      await page.getByRole('button', { name: 'Load demo emails', exact: true }).click();
+      const first = page.getByRole('row').filter({ hasText: messageFixtures[0].subject });
+      await expectVisible(first);
+      await checkNoOverflow(page, 'Guest demo desktop');
+      await page.screenshot({ path: path.join(screenshotDirectory, 'cs-agent-ui-guest-demo.png'), fullPage: true });
+      await first.getByRole('button', { name: 'Review →', exact: true }).click();
+      await expectVisible(page.getByRole('button', { name: 'Approve demo', exact: true }));
+      await expectVisible(page.getByRole('button', { name: 'Exit demo', exact: true }));
+      assert.equal(await page.getByRole('button', { name: 'Approve & send via Outlook', exact: true }).count(), 0);
+      await page.getByRole('textbox', { name: 'Body', exact: true }).fill('Demo reply reviewed by the presenter.');
+      await page.getByRole('button', { name: 'Approve demo', exact: true }).click();
+      await expectText(first, 'Approved (demo)');
+      assert.equal(state.demoApprovals, 1);
+      assert.equal(state.requests[0].draft.body, 'Demo reply reviewed by the presenter.', 'Edited demo draft is saved before approval');
+      assert.equal(state.requests[0].status, 'APPROVED', 'Demo approval never becomes SENT');
+      await first.getByRole('button', { name: 'Review →', exact: true }).click();
+      await expectText(page.locator('.chip').filter({ hasText: 'Approved (demo)' }), 'Approved (demo)');
+      assert.equal(await page.getByRole('button', { name: 'Approve demo', exact: true }).count(), 0, 'Approved demos are settled and cannot be approved again');
+      await page.getByRole('button', { name: /Back to queue/ }).click();
+
+      const input = page.locator('input[type="file"]');
+      await input.setInputFiles({ name: 'guest-order.msg', mimeType: 'application/vnd.ms-outlook', buffer: Buffer.from('smoke fixture: .msg transport only') });
+      await expectText(page.getByRole('status'), '1 email imported');
+      assert.deepEqual(state.uploads, ['guest-order.msg']);
+      await page.getByText('Or enter an email manually', { exact: true }).click();
+      await page.getByRole('textbox', { name: 'From', exact: true }).fill('demo@example.com');
+      await page.getByRole('textbox', { name: 'Subject', exact: true }).fill('Guest manual email');
+      await page.getByRole('textbox', { name: 'Body', exact: true }).fill('Please provide a packing list for order 4500012345.');
+      await page.getByRole('button', { name: 'Process email', exact: true }).click();
+      await expectVisible(page.getByRole('row').filter({ hasText: 'Guest manual email' }));
+      await page.setViewportSize({ width: 390, height: 844 });
+      await checkNoOverflow(page, 'Guest demo mobile');
+      await page.getByRole('row').filter({ hasText: 'Guest manual email' }).getByRole('button', { name: 'Review →', exact: true }).click();
+      await expectVisible(page.getByRole('heading', { name: /Draft response/ }));
+      await checkNoOverflow(page, 'Guest detail mobile');
+      await page.getByRole('button', { name: 'Exit demo', exact: true }).click();
+      await expectVisible(page.getByRole('button', { name: 'Continue as guest', exact: true }));
+      assert.equal(await page.getByRole('heading', { name: /Draft response/ }).count(), 0, 'Exit demo unmounts the open request');
+      assert.equal((await page.locator('body').innerText()).includes('Guest manual email'), false, 'Exit demo clears imported email content');
+      await page.getByRole('button', { name: 'Continue as guest', exact: true }).click();
+      await expectVisible(page.getByText('Your demo work queue is ready', { exact: true }));
+      assert.equal(state.requests.length, 0, 'A new guest session starts with an empty demo queue');
+    }, { guestWorkflow: true, allowUploads: true });
+    console.log('PASS: Guest demo entry without Entra setup, sample load, draft edit/approval, .msg/manual imports, mobile layout, and exit from detail.');
+
+    await scenario(browser, { configured: false, signedIn: false, guestEnabled: true, username: null }, async (page, state) => {
+      await expectVisible(page.getByRole('button', { name: 'Continue as guest', exact: true }));
+      state.guestStartError = 'GUEST_DEMO_DISABLED';
+      await page.getByRole('button', { name: 'Continue as guest', exact: true }).click();
+      await expectText(page.getByRole('alert'), 'Guest demo access is currently disabled.');
+      assert.equal(await page.getByRole('button', { name: 'Continue as guest', exact: true }).count(), 0);
+      assert.ok(!state.apiCalls.some((call) => /requests|stats|mailbox/.test(call)), 'Rejected guest entry never accesses data');
+    });
+    await scenario(browser, { configured: false, signedIn: false, guestEnabled: true, username: null }, async (page, state) => {
+      await expectVisible(page.getByRole('button', { name: 'Continue as guest', exact: true }));
+      state.guestStartError = 'GUEST_DEMO_UNAVAILABLE';
+      await page.getByRole('button', { name: 'Continue as guest', exact: true }).click();
+      await expectText(page.getByRole('alert'), 'Guest demo setup needs attention.');
+    });
+    await scenario(browser, { configured: false, signedIn: false, guest: true, guestEnabled: true, username: null }, async (page, state) => {
+      await expectVisible(page.getByRole('row').filter({ hasText: messageFixtures[0].subject }));
+      state.expireRequests = true;
+      await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+      await expectText(page.getByRole('alert'), 'Your guest demo session has expired.');
+      await expectVisible(page.getByRole('button', { name: 'Continue as guest', exact: true }));
+      assert.equal((await page.locator('body').innerText()).includes(messageFixtures[0].subject), false, 'Expired guest session clears its queue');
+      assert.equal(await page.getByRole('button', { name: 'Exit demo', exact: true }).count(), 0);
+    }, { requests: [requestFixture(messageFixtures[0])], guestWorkflow: true });
+    console.log('PASS: Disabled/unavailable guest entry and expired demo sessions keep data protected.');
     console.log('PASS: No live Outlook/SAP calls or email-send actions; all APIs were intercepted.');
     console.log(`Screenshots: ${path.join(screenshotDirectory, 'cs-agent-ui-desktop.png')}, ${path.join(screenshotDirectory, 'cs-agent-ui-mobile.png')}`);
   } finally {

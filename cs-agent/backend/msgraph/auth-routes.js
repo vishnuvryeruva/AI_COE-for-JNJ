@@ -27,17 +27,25 @@ function postLoginPath(config, code) {
   return `${url.pathname}${url.search}${url.hash}`;
 }
 function createAuthHandlers({ auth, db, config }) {
+  const guestEnabled = () => Boolean(config.guestDemoEnabled && auth.hasSafeCookieSecret(config));
   function requireSameOrigin(req, res, next) {
-    if (['GET', 'HEAD', 'OPTIONS'].includes(req.method) || (!config.authRequired && !auth.isConfigured())) return next();
+    if (['GET', 'HEAD', 'OPTIONS'].includes(req.method) || (!config.authRequired && !auth.isConfigured() && !config.guestDemoEnabled)) return next();
     // SameSite cookies also accompany requests from sibling corporate domains.
     // Reject browser mutations from those origins before an approve/send action.
     // Missing browser headers remains valid for server-to-server/test clients;
     // such callers still need an unforgeable signed session cookie.
     const site = req.get('sec-fetch-site');
     const origin = req.get('origin');
-    let expectedOrigin;
-    try { expectedOrigin = new URL(config.azure.redirectUri).origin; } catch { /* incomplete setup fails closed */ }
-    if ((site && site !== 'same-origin') || (origin && origin !== expectedOrigin)) {
+    const expectedOrigins = new Set();
+    // The reverse proxy must preserve the browser's Host (including port),
+    // and Express trusts only that proxy's protocol indication.
+    if (req.get('host') && ['http', 'https'].includes(req.protocol)) {
+      try { expectedOrigins.add(new URL(`${req.protocol}://${req.get('host')}`).origin); } catch { /* invalid host fails closed */ }
+    }
+    if (auth.isConfigured()) {
+      try { expectedOrigins.add(new URL(config.azure.redirectUri).origin); } catch { /* incomplete setup fails closed */ }
+    }
+    if ((site && site !== 'same-origin') || (origin && !expectedOrigins.has(origin))) {
       return res.status(403).json({ code: 'REQUEST_ORIGIN_DENIED', error: 'Open this application directly, refresh the page, and try the action again.' });
     }
     return next();
@@ -51,14 +59,36 @@ function createAuthHandlers({ auth, db, config }) {
   async function status(req, res) {
     res.set('Cache-Control', 'no-store');
     const configured = auth.isConfigured();
-    const session = configured ? await sessionFrom(req) : null;
+    const session = await sessionFrom(req);
+    const guest = guestEnabled() && auth.isGuestSession(session);
+    const signedIn = configured && Boolean(session) && !auth.isGuestSession(session);
     res.json({
       configured,
       required: config.authRequired,
-      signedIn: Boolean(session),
-      username: session?.username || null,
+      signedIn,
+      guestEnabled: guestEnabled(),
+      guest,
+      username: signedIn || guest ? session.username : null,
       configurationIssues: configured ? [] : auth.configurationIssues(),
     });
+  }
+  async function guest(req, res) {
+    res.set('Cache-Control', 'no-store');
+    if (!config.guestDemoEnabled) return res.status(403).json({
+      code: 'GUEST_DEMO_DISABLED', error: 'Guest demo access is not enabled for this workspace.',
+    });
+    if (!guestEnabled()) return res.status(503).json({
+      code: 'GUEST_DEMO_UNAVAILABLE', error: 'Guest demo setup needs attention. Ask your administrator to configure a strong session signing key.',
+    });
+    const sid = auth.newSessionId();
+    const owner = `guest:${auth.newSessionId()}`;
+    const oldSid = req.signedCookies?.sid;
+    await db.createSession(sid, owner, 'Guest demo');
+    if (typeof oldSid === 'string') await db.deleteSession(oldSid);
+    req.authSession = { sid, home_account_id: owner, username: 'Guest demo' };
+    res.cookie('sid', sid, auth.cookieOptions(req, { guest: true }));
+    res.clearCookie('oauth_flow', auth.cookieOptions(req, { flow: true, clear: true }));
+    return res.json({ ok: true, guest: true });
   }
   async function login(req, res) {
     res.set('Cache-Control', 'no-store');
@@ -99,26 +129,35 @@ function createAuthHandlers({ auth, db, config }) {
     const sid = req.signedCookies?.sid;
     if (typeof sid === 'string') await db.deleteSession(sid);
     req.authSession = null;
-    res.clearCookie('sid', auth.cookieOptions(req, { clear: true }));
+    res.clearCookie('sid', auth.cookieOptions(req, { clear: true, guest: true }));
     res.clearCookie('oauth_flow', auth.cookieOptions(req, { flow: true, clear: true }));
     res.set('Cache-Control', 'no-store');
     res.json({ ok: true });
   }
   async function requireSignIn(req, res, next) {
+    const session = await sessionFrom(req);
+    if (!session && typeof req.signedCookies?.sid === 'string') return res.status(401).json({
+      code: 'AUTH_SIGN_IN_REQUIRED', error: 'Your session has expired. Start a new guest demo or sign in again to continue.',
+    });
+    if (auth.isGuestSession(session)) {
+      if (guestEnabled()) return next();
+      return res.status(401).json({
+        code: 'AUTH_SIGN_IN_REQUIRED', error: 'This guest demo session is no longer available. Sign in to continue.',
+      });
+    }
     // Resolve identity even in local demo mode so authenticated requests retain
     // their per-user ownership and never mix with anonymous demo requests.
     if (!config.authRequired) {
-      await sessionFrom(req);
       return next();
     }
     if (!auth.isConfigured()) return res.status(503).json({
       code: 'AUTH_NOT_CONFIGURED', error: 'Company sign-in is not configured. Ask your administrator to finish Microsoft Entra setup.',
     });
-    if (!(await sessionFrom(req))) return res.status(401).json({
+    if (!session) return res.status(401).json({
       code: 'AUTH_SIGN_IN_REQUIRED', error: 'Sign in with your company Microsoft account to access this application.',
     });
     return next();
   }
-  return { status, login, callback, logout, requireSignIn, requireSameOrigin, sessionFrom };
+  return { status, login, guest, callback, logout, requireSignIn, requireSameOrigin, sessionFrom };
 }
 module.exports = { createAuthHandlers, authErrorCode, postLoginPath };

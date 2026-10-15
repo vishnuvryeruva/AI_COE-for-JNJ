@@ -9,12 +9,13 @@ import {
 interface Props {
   id: string;
   outlookConnected: boolean;
+  demoMode?: boolean;
   onBack: () => void;
   onChanged: () => void;
   onError: (message: string) => void;
 }
 
-export default function RequestDetail({ id, outlookConnected, onBack, onChanged, onError }: Props) {
+export default function RequestDetail({ id, outlookConnected, demoMode = false, onBack, onChanged, onError }: Props) {
   const [request, setRequest] = useState<CsRequest | null>(null);
   const [busy, setBusy] = useState(false);
   const [to, setTo] = useState('');
@@ -50,7 +51,7 @@ export default function RequestDetail({ id, outlookConnected, onBack, onChanged,
 
   if (!request) return <div className="empty">Loading…</div>;
 
-  const settled = request.status === 'SENT' || request.status === 'REJECTED';
+  const settled = request.status === 'SENT' || request.status === 'APPROVED' || request.status === 'REJECTED';
   const extractionFailed = !request.extraction.confidence;
   const canSend = Boolean(to.trim()) && !settled;
 
@@ -233,7 +234,7 @@ export default function RequestDetail({ id, outlookConnected, onBack, onChanged,
                 <button
                   className="btn ok"
                   disabled={busy || !canSend}
-                  title={canSend ? undefined : 'A recipient is required before sending'}
+                  title={canSend ? undefined : demoMode ? 'A recipient is required before approving the demo' : 'A recipient is required before sending'}
                   onClick={() =>
                     void act(async () => {
                       if (dirty) await api.saveDraft(request.id, { to, subject, body });
@@ -241,7 +242,7 @@ export default function RequestDetail({ id, outlookConnected, onBack, onChanged,
                     }, true)
                   }
                 >
-                  {outlookConnected ? 'Approve & send via Outlook' : 'Approve'}
+                  {demoMode ? 'Approve demo' : outlookConnected ? 'Approve & send via Outlook' : 'Approve'}
                 </button>
                 <button
                   className="btn"
@@ -263,7 +264,12 @@ export default function RequestDetail({ id, outlookConnected, onBack, onChanged,
               </div>
             )}
 
-            {outlookConnected ? (
+            {demoMode ? (
+              <div className="callout info" style={{ marginTop: 14 }}>
+                <strong>Demo approval</strong>
+                Approve demo records your review decision. It does not send an email or connect to Outlook.
+              </div>
+            ) : outlookConnected ? (
               <div className="callout info" style={{ marginTop: 14 }}>
                 <strong>Sends via Outlook</strong>
                 Approve &amp; send delivers this reply through Microsoft Graph, from your own mailbox —

@@ -11,6 +11,8 @@ applications:
     timeout: 180
     env:
       NODE_ENV: production
+      AUTH_REQUIRED: "true"
+      GUEST_DEMO_ENABLED: "true"
       AICORE_MODEL: gpt-4o-mini
       AGENT_MAILBOX: cs-agent@medtech-ai.jnj.com
       CONFIDENCE_THRESHOLD: "0.75"

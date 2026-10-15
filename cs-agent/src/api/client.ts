@@ -52,6 +52,8 @@ export interface AuthStatus {
   required: boolean;
   configured: boolean;
   signedIn: boolean;
+  guest: boolean;
+  guestEnabled: boolean;
   username: string | null;
 }
 
@@ -92,6 +94,7 @@ export const api = {
 
   authStatus: () => request<AuthStatus>('/auth/status'),
   authLoginUrl: `${BASE}/auth/login`,
+  startGuest: () => request<{ ok: boolean }>('/auth/guest', { method: 'POST' }),
   logout: async () => {
     const result = await request<{ ok: boolean }>('/auth/logout', { method: 'POST' });
     invalidateAuth('signedOut');

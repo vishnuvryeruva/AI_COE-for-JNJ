@@ -85,6 +85,9 @@ button:focus-visible, a:focus-visible, summary:focus-visible, [role='button']:fo
 .sign-in-panel p { color: var(--muted); }
 .sign-in-panel .btn { margin-top: 10px; }
 .sign-in-panel .sign-in-help { margin-top: 24px; font-size: 12px; }
+.sign-in-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.topbar .guest-badge { color: var(--brand-dark); background: var(--info-bg); }
+.guest-notice { margin-bottom: 24px; }
 
 /* --- Tiles --- */
 

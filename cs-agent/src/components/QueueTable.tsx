@@ -5,15 +5,16 @@ interface Props {
   requests: CsRequest[];
   onOpen: (id: string) => void;
   filtered?: boolean;
+  demoMode?: boolean;
 }
 
-export default function QueueTable({ requests, onOpen, filtered = false }: Props) {
+export default function QueueTable({ requests, onOpen, filtered = false, demoMode = false }: Props) {
   if (requests.length === 0) {
     return (
       <div className="empty">
         <span className="empty-icon" aria-hidden="true">↳</span>
-        <strong>{filtered ? 'No requests in this view' : 'Your next action starts in Outlook'}</strong>
-        <p>{filtered ? 'Choose another status to see more requests.' : 'Find emails above, then prepare a draft to add a request to your queue.'}</p>
+        <strong>{filtered ? 'No requests in this view' : demoMode ? 'Your demo work queue is ready' : 'Your next action starts in Outlook'}</strong>
+        <p>{filtered ? 'Choose another status to see more requests.' : demoMode ? 'Load demo emails or import a saved email above to review your first draft.' : 'Find emails above, then prepare a draft to add a request to your queue.'}</p>
       </div>
     );
   }

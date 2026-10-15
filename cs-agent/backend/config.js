@@ -1,19 +1,23 @@
 require('dotenv').config();
+const { randomBytes } = require('node:crypto');
 
 module.exports = {
   aicoreServiceKey: process.env.AICORE_SERVICE_KEY || '',
   aicoreModel: process.env.AICORE_MODEL || 'gpt-4o-mini',
 
   isProd: process.env.NODE_ENV === 'production',
-  cookieSecret: process.env.COOKIE_SECRET || 'dev-cookie-secret-change-me',
+  // A demo can run without provisioning secrets, but never with a predictable
+  // signing key. Set COOKIE_SECRET to preserve sessions across restarts.
+  cookieSecret: process.env.COOKIE_SECRET || randomBytes(32).toString('hex'),
+  guestDemoEnabled: process.env.GUEST_DEMO_ENABLED === 'true',
   // Fail closed in deployed environments. Explicitly opt out only for a demo
   // containing no company/customer data.
   authRequired: process.env.AUTH_REQUIRED === undefined
     ? process.env.NODE_ENV === 'production'
     : process.env.AUTH_REQUIRED !== 'false',
 
-  // Microsoft Graph (delegated). Required-auth deployments remain locked until
-  // these are configured. A dev tenant uses the same flow with its own app IDs.
+  // Microsoft Graph (delegated). Company access requires these settings; an
+  // explicitly enabled guest demo works without them and cannot access Graph.
   azure: {
     clientId: process.env.AZURE_CLIENT_ID || '',
     clientSecret: process.env.AZURE_CLIENT_SECRET || '',

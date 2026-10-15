@@ -2,11 +2,12 @@ import { useRef, useState } from 'react';
 import { api } from '../api/client';
 
 interface Props {
+  demoMode?: boolean;
   onIngested: () => void;
   onError: (message: string) => void;
 }
 
-export default function IngestPanel({ onIngested, onError }: Props) {
+export default function IngestPanel({ demoMode = false, onIngested, onError }: Props) {
   const [busy, setBusy] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [from, setFrom] = useState('');
@@ -65,11 +66,11 @@ export default function IngestPanel({ onIngested, onError }: Props) {
   return (
     <div className="panel">
       <div className="panel-head">
-        <h2>Manual import</h2>
-        <span className="sub">Use a saved email or enter its contents</span>
+        <h2>{demoMode ? 'Start a demo request' : 'Manual import'}</h2>
+        <span className="sub">{demoMode ? 'Load sample emails or try your own saved email' : 'Use a saved email or enter its contents'}</span>
         <span className="spacer" />
-        <button className="btn sm" disabled={busy} onClick={() => run(api.loadScenarios)}>
-          Load scenario emails
+        <button className={`btn ${demoMode ? 'primary' : 'sm'}`} disabled={busy} onClick={() => run(api.loadScenarios)}>
+          {demoMode ? 'Load demo emails' : 'Load scenario emails'}
         </button>
       </div>
 

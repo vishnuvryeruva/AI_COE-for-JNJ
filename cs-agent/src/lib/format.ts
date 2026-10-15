@@ -5,6 +5,7 @@ export const STATUS_LABEL: Record<Status, string> = {
   NEEDS_REVIEW: 'Needs review',
   FAILED: 'Failed',
   SENT: 'Sent',
+  APPROVED: 'Approved (demo)',
   REJECTED: 'Rejected',
 };
 
@@ -13,6 +14,7 @@ export const STATUS_TONE: Record<Status, string> = {
   NEEDS_REVIEW: 'warn',
   FAILED: 'err',
   SENT: 'info',
+  APPROVED: 'info',
   REJECTED: 'neutral',
 };
 

@@ -9,6 +9,8 @@ services:
     environment:
       PORT: 8080
       BACKEND_PORT: 3000
+      AUTH_REQUIRED: ${AUTH_REQUIRED:-true}
+      GUEST_DEMO_ENABLED: ${GUEST_DEMO_ENABLED:-true}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

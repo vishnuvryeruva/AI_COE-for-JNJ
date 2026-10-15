@@ -1,4 +1,4 @@
-export type Status = 'READY' | 'NEEDS_REVIEW' | 'FAILED' | 'SENT' | 'REJECTED';
+export type Status = 'READY' | 'NEEDS_REVIEW' | 'FAILED' | 'SENT' | 'APPROVED' | 'REJECTED';
 
 export interface Attachment {
   name: string;
@@ -69,6 +69,7 @@ export interface Stats {
   NEEDS_REVIEW: number;
   FAILED: number;
   SENT: number;
+  APPROVED: number;
   REJECTED: number;
   TOTAL: number;
 }

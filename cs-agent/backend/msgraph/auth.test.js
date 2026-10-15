@@ -116,7 +116,7 @@ test('optional local auth still resolves identity for request ownership and cach
 test('status reports required sign-in and configuration without reporting secret values', async () => {
   const res = response();
   await setup({ configured: false }).status({}, res);
-  assert.deepEqual(res.body, { configured: false, required: true, signedIn: false, username: null, configurationIssues: ['AZURE_CLIENT_ID'] });
+  assert.deepEqual(res.body, { configured: false, required: true, signedIn: false, guestEnabled: false, guest: false, username: null, configurationIssues: ['AZURE_CLIENT_ID'] });
   assert.equal(res.headers['Cache-Control'], 'no-store');
 });
 
@@ -210,4 +210,114 @@ test('browser mutations reject cross-origin and sibling-domain CSRF before appro
   let callbackAllowed = false;
   handlers.requireSameOrigin({ method: 'GET', get: () => 'cross-site' }, response(), () => { callbackAllowed = true; });
   assert.ok(callbackAllowed, 'Microsoft OAuth callback must allow cross-site top-level navigation');
+});
+
+test('guest sessions work without Microsoft credentials and have isolated random owners', async () => {
+  const created = [];
+  const revoked = [];
+  const handlers = setup({
+    configured: false,
+    config: settings({ guestDemoEnabled: true }),
+    dbOverrides: {
+      createSession: async (...args) => created.push(args),
+      deleteSession: async (sid) => revoked.push(sid),
+    },
+  });
+  const first = response();
+  const req = { secure: true, signedCookies: { sid: 'a'.repeat(48) } };
+  await handlers.guest(req, first);
+  await handlers.guest({ secure: true }, response());
+  assert.deepEqual(first.body, { ok: true, guest: true });
+  assert.equal(first.headers['Cache-Control'], 'no-store');
+  assert.deepEqual(revoked, ['a'.repeat(48)]);
+  assert.equal(first.cookies[0][0], 'sid');
+  assert.equal(first.cookies[0][2].signed, true);
+  assert.equal(first.cookies[0][2].httpOnly, true);
+  assert.equal(first.cookies[0][2].secure, true);
+  assert.equal(first.cookies[0][2].maxAge, auth.SESSION_MAX_AGE);
+  for (const [sid, owner, name] of created) {
+    assert.match(sid, /^[a-f0-9]{48}$/);
+    assert.match(owner, /^guest:[a-f0-9]{48}$/);
+    assert.equal(name, 'Guest demo');
+    assert.notEqual(owner, `guest:${sid}`, 'public owner must not reveal the session credential');
+  }
+  assert.notEqual(created[0][0], created[1][0]);
+  assert.notEqual(created[0][1], created[1][1]);
+  assert.equal(req.authSession.home_account_id, created[0][1]);
+  let allowed = false;
+  await handlers.requireSignIn(req, response(), () => { allowed = true; });
+  assert.ok(allowed, 'required login permits an explicitly enabled guest before Entra setup');
+  const status = response();
+  await handlers.status(req, status);
+  assert.equal(status.body.guest, true);
+  assert.equal(status.body.guestEnabled, true);
+  assert.equal(status.body.signedIn, false);
+  assert.equal(status.body.configured, false);
+  assert.equal(status.body.username, 'Guest demo');
+});
+
+test('guest creation is disabled by default and never accepts a predictable short signing key', async () => {
+  for (const [config, expected, code] of [
+    [settings(), 403, 'GUEST_DEMO_DISABLED'],
+    [settings({ guestDemoEnabled: true, cookieSecret: 'dev-cookie-secret-change-me' }), 503, 'GUEST_DEMO_UNAVAILABLE'],
+  ]) {
+    const handlers = setup({ configured: false, config, dbOverrides: { createSession: async () => assert.fail('guest must not be created') } });
+    const res = response();
+    await handlers.guest({}, res);
+    assert.equal(res.statusCode, expected);
+    assert.equal(res.body.code, code);
+    const status = response();
+    await handlers.status({}, status);
+    assert.equal(status.body.guestEnabled, false);
+  }
+});
+
+test('disabling guest mode denies existing guest sessions even when anonymous local access is enabled', async () => {
+  const session = { sid: 'a'.repeat(48), home_account_id: `guest:${'b'.repeat(48)}`, username: 'Guest demo' };
+  for (const authRequired of [true, false]) {
+    const handlers = setup({ configured: false, config: settings({ authRequired, guestDemoEnabled: false }), session });
+    const req = { signedCookies: { sid: session.sid } };
+    const res = response();
+    await handlers.requireSignIn(req, res, () => assert.fail('disabled guest must not reach the queue'));
+    assert.equal(res.statusCode, 401);
+    assert.equal(res.body.code, 'AUTH_SIGN_IN_REQUIRED');
+    const status = response();
+    await handlers.status(req, status);
+    assert.equal(status.body.guest, false);
+    assert.equal(status.body.signedIn, false);
+    assert.equal(status.body.username, null);
+  }
+});
+
+test('expired guest sessions do not silently become anonymous demo access', async () => {
+  const handlers = setup({ configured: false, config: settings({ authRequired: false, guestDemoEnabled: true }), session: null });
+  const res = response();
+  await handlers.requireSignIn({ signedCookies: { sid: 'a'.repeat(48) } }, res, () => assert.fail('expired guest must not access anonymous queue'));
+  assert.equal(res.statusCode, 401);
+  assert.equal(res.body.code, 'AUTH_SIGN_IN_REQUIRED');
+});
+
+test('guest sessions can never obtain a Microsoft Graph access token', async () => {
+  const session = { home_account_id: `guest:${'a'.repeat(48)}` };
+  assert.equal(auth.isGuestSession(session), true);
+  assert.equal(auth.isGuestSession({ home_account_id: 'microsoft-account.tenant' }), false);
+  assert.equal(await auth.getAccessTokenForSession(session), null);
+});
+
+test('guest browser actions use the actual app origin without requiring an Azure redirect', () => {
+  const handlers = setup({ configured: false, config: settings({ guestDemoEnabled: true }) });
+  for (const [protocol, host, origin, allowed] of [
+    ['http', 'localhost:5173', 'http://localhost:5173', true],
+    ['http', 'localhost:8080', 'http://localhost:8080', true],
+    ['https', 'demo.example', 'https://demo.example', true],
+    ['https', 'demo.example', 'https://sibling.example', false],
+    ['https', 'demo.example', 'http://localhost:8080', false],
+  ]) {
+    const headers = { host, origin, 'sec-fetch-site': 'same-origin' };
+    let next = false;
+    const res = response();
+    handlers.requireSameOrigin({ method: 'POST', protocol, get: (name) => headers[name] }, res, () => { next = true; });
+    assert.equal(next, allowed, `${origin} to ${protocol}://${host}`);
+    if (!allowed) assert.equal(res.statusCode, 403);
+  }
 });

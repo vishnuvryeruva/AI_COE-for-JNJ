@@ -35,7 +35,7 @@ const ownerFor = (req) => req.authSession?.home_account_id || null;
 const actorFor = (req) => req.authSession?.username || 'csr';
 async function graphTokenFor(req) {
   const session = await sessionFrom(req);
-  if (!session) return null;
+  if (!session || graphAuth.isGuestSession(session)) return null;
   return graphAuth.getAccessTokenForSession(session);
 }
 
@@ -48,6 +48,7 @@ api.get('/health', (_req, res) => {
 api.use(authHandlers.requireSameOrigin);
 api.get('/auth/status', wrap(authHandlers.status));
 api.get('/auth/login', wrap(authHandlers.login));
+api.post('/auth/guest', wrap(authHandlers.guest));
 api.get('/auth/callback', wrap(authHandlers.callback));
 api.post('/auth/logout', wrap(authHandlers.logout));
 
@@ -56,6 +57,13 @@ api.use((_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
 api.use(wrap(authHandlers.requireSignIn));
 
 // --- Mailbox (the signed-in CSR's own inbox) ---
+
+api.use('/mailbox', (req, res, next) => {
+  if (graphAuth.isGuestSession(req.authSession)) {
+    return res.status(403).json({ code: 'GUEST_OUTLOOK_UNAVAILABLE', error: 'Outlook is not connected in guest mode. Load demo emails or upload a saved .msg or .eml to explore the workflow.' });
+  }
+  return next();
+});
 
 api.post('/mailbox/search', createSearchHandler({
   isConfigured: graphAuth.isConfigured,
@@ -154,6 +162,12 @@ api.post('/requests/:id/approve', wrap(async (req, res) => {
     return res.status(400).json({ error: 'Cannot send: no recipient. Set the original sender first.' });
   }
 
+  if (graphAuth.isGuestSession(req.authSession)) {
+    const request = await db.setStatus(req.params.id, 'APPROVED', 'Approved in guest demo. No email was sent.', ownerFor(req));
+    await db.addAudit(req.params.id, actorFor(req), 'DEMO_APPROVED', 'Guest demo approval — no email was sent');
+    return res.json({ ...request, sent: false, demo: true });
+  }
+
   const token = await graphTokenFor(req);
   const actor = actorFor(req);
   const recipients = `to=${existing.draft.to}, cc=${(existing.draft.cc || []).join(',') || 'none'}`;
@@ -176,7 +190,7 @@ api.post('/requests/:id/approve', wrap(async (req, res) => {
   }
 
   // Not signed in — record the approval but don't send. Demo/offline path.
-  const request = await db.setStatus(req.params.id, 'SENT', 'Approved (send stubbed — not signed in to Outlook)', ownerFor(req));
+  const request = await db.setStatus(req.params.id, 'APPROVED', 'Approved in demo mode. No email was sent.', ownerFor(req));
   await db.addAudit(req.params.id, actor, 'APPROVED', `${recipients} — send stubbed`);
   res.json({ ...request, sent: false });
 }));

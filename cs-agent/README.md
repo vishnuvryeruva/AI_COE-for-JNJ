@@ -77,7 +77,11 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Open <http://localhost:8080>. Docker requires sign-in by default. For a local synthetic-data demo without Entra setup, explicitly add `AUTH_REQUIRED=false` to `.env`, then expand **Import an email manually** and choose **Load scenario emails**. Keep `AUTH_REQUIRED=true` for J&J/company data.
+Open <http://localhost:8080> and choose **Continue as guest**. No Microsoft setup is needed for the showcase. Choose **Load demo emails** or import a saved `.msg`/`.eml`, open a request, review/edit its draft and select **Approve demo**. The result is **Approved (demo)**; no email is sent.
+
+The POC Compose and Cloud Foundry manifest enable `GUEST_DEMO_ENABLED=true` with `AUTH_REQUIRED=true`. Each guest gets a separate session and private queue, isolated from Microsoft users and other guests. Guest mode does not connect to Outlook. **Exit demo** ends the session; a later guest session starts a new queue. With no configured `COOKIE_SECRET`, a random process-local signing key lets guest demos work immediately; restarting the backend invalidates those cookies.
+
+Set `GUEST_DEMO_ENABLED=false` before the company-data rollout, and finish the Entra setup below. This also denies existing guest sessions. The older `AUTH_REQUIRED=false` anonymous development mode remains available, but is not needed to showcase the app.
 
 For real intent detection put `AICORE_SERVICE_KEY` in `.env` — see [Local dev against real AI Core](#local-dev-against-real-ai-core).
 
@@ -119,7 +123,7 @@ CS_AGENT_TEST_DATABASE_URL=postgresql://user@localhost/test_db node --test backe
 PLAYWRIGHT_PATH=/path/to/playwright CHROME_PATH=/path/to/chrome npm run smoke
 ```
 
-The browser smoke test starts Vite on port 5174 and intercepts every API call. It checks login enforcement, sign-out/session expiry, Outlook search, draft preparation, duplicate handling, upload validation/retries, readable 502 errors, review navigation, and mobile layout without reading or sending real email. Set `SMOKE_BASE_URL` to use an existing Vite server instead.
+The browser smoke test starts Vite on port 5174 and intercepts every API call. It checks guest entry/sample review/demo approval, login enforcement, sign-out/session expiry, Outlook search, draft preparation, duplicate handling, upload validation/retries, readable 502 errors, review navigation, and mobile layout without reading or sending real email. Set `SMOKE_BASE_URL` to use an existing Vite server instead.
 
 ## Deploy to BTP Cloud Foundry
 
@@ -142,7 +146,7 @@ The SDK reads the binding out of `VCAP_SERVICES`, so no key goes in the manifest
 
 ## Enabling Outlook (Microsoft Graph)
 
-Production deployments require sign-in before any email, queue, upload, audit, or review API can be used. Missing Entra configuration displays **J&J sign-in setup required** and blocks data access. The frontend waits for the authentication check before loading the queue.
+With `AUTH_REQUIRED=true`, data APIs require a Microsoft or enabled guest session. Before Entra setup, the showcase entry screen offers **Continue as guest** when `GUEST_DEMO_ENABLED=true`. Disable guest access for a company-only deployment; missing Entra configuration then blocks workspace access. The frontend waits for the authentication check before loading the queue.
 
 `AUTH_REQUIRED` defaults to `true` with `NODE_ENV=production`; set it explicitly for your environment. The same Microsoft sign-in grants delegated Outlook access. A specific tenant GUID and a random `COOKIE_SECRET` of at least 32 characters are required. The backend uses authorization code with PKCE, nonce/state validation, signed HttpOnly cookies, and an eight-hour session lifetime. J&J passwords are entered only on Microsoft’s sign-in page.
 
@@ -164,6 +168,7 @@ Each user has a private imported-email queue, drafts, counts and audit access. E
    AZURE_REDIRECT_URI=http://localhost:8080/api/v1/auth/callback
    COOKIE_SECRET=<at least 32 random characters>
    AUTH_REQUIRED=true
+   GUEST_DEMO_ENABLED=false
    ```
 4. `docker compose up --build` → open the app → **Sign in with J&J account** → **Find emails** → **Prepare draft** → review → **Approve & send via Outlook**.
 
@@ -184,6 +189,7 @@ cf set-env cs-agent AZURE_TENANT_ID     "<from IT>"
 cf set-env cs-agent AZURE_REDIRECT_URI  "https://cs-agent.cfapps.us10.hana.ondemand.com/api/v1/auth/callback"
 cf set-env cs-agent COOKIE_SECRET       "<at least 32 random characters>"
 cf set-env cs-agent AUTH_REQUIRED        "true"
+cf set-env cs-agent GUEST_DEMO_ENABLED   "false"
 cf restart cs-agent
 ```
 
@@ -252,7 +258,7 @@ Harmless in POC 1 (the field is displayed, nothing depends on it). Do not carry 
 
 | Gap | Why |
 |---|---|
-| **Sending without Outlook** | With Outlook configured, an expired/missing token returns a sign-in error and never marks the reply sent. Only an explicitly unconfigured demo can record a stub approval. |
+| **Sending without Outlook** | Guests can approve a demo, recorded as `APPROVED` with `sent:false`. Guests cannot call Graph. For Microsoft users an expired/missing Outlook token prompts sign-in and never marks the reply sent. |
 | **Graph auto-polling** | Outlook messages are found on demand using the search command. Unattended ingestion and Graph subscriptions are not implemented. |
 | **ERP data / documents** | POC 2 |
 | **Business rules** | Full project |

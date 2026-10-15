@@ -220,7 +220,7 @@ async function setStatus(id, status, reason, ownerAccountId = null) {
 
 async function stats(ownerAccountId = null) {
   const { rows } = await pool.query('SELECT status, COUNT(*)::int AS count FROM requests WHERE owner_account_id IS NOT DISTINCT FROM $1::text GROUP BY status', [ownerAccountId]);
-  const counts = { READY: 0, NEEDS_REVIEW: 0, FAILED: 0, SENT: 0, REJECTED: 0 };
+  const counts = { READY: 0, NEEDS_REVIEW: 0, FAILED: 0, SENT: 0, REJECTED: 0, APPROVED: 0 };
   for (const row of rows) counts[row.status] = row.count;
   counts.TOTAL = Object.values(counts).reduce((a, b) => a + b, 0);
   return counts;
